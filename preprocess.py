@@ -30,7 +30,7 @@ if __name__ == "__main__":
     os.makedirs(new_folder, exist_ok=True)
 
     transform = transforms.Compose([
-        transforms.CenterCrop((2048, 1024)),
+        transforms.CenterCrop(1024),
         transforms.Resize((128, 128)),
         transforms.ToTensor()
     ])
