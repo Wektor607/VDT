@@ -1,28 +1,9 @@
+# All videos have 30 frames length in CityScapes
 import os
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 import torch
-# class ImageFolderDataset(Dataset):
-#     def __init__(self, root_dir, transform=None):
-#         self.root_dir = root_dir
-#         self.transform = transform
-#         self.image_paths = []
-#         for root, _, files in os.walk(root_dir):
-#             for file in files:
-#                 if file.endswith(('.png', '.jpg', '.jpeg')):
-#                     self.image_paths.append(os.path.join(root, file))
-
-#     def __len__(self):
-#         return len(self.image_paths)
-
-#     def __getitem__(self, idx):
-#         img_path = self.image_paths[idx]
-#         image = Image.open(img_path).convert("RGB")
-#         # print(image.size)
-#         if self.transform:
-#             image = self.transform(image)
-#         return image, img_path
 
 class FrameDataset(Dataset):
     def __init__(self, root_dir, transform=None, frames_per_clip=30):
@@ -80,9 +61,3 @@ if __name__ == "__main__":
     train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4)
     val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=4)
     test_dataloader = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=4)
-
-    # # Инициализация модели, оптимизатора и других компонентов
-    # optimizer = Adam(model.parameters(), lr=1e-4)
-
-    # # Запуск тренировочного процесса
-    # train_vdt(model, train_dataloader, vae, diffusion, optimizer, device=torch.device('cuda'), num_epochs=20)
