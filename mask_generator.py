@@ -61,7 +61,7 @@ class MaskingGenerator:
         return delta
 
     def __call__(self):
-        mask = np.zeros(shape=self.get_shape(), dtype=np.int)
+        mask = np.zeros(shape=self.get_shape(), dtype=int)
         mask_count = 0
         while mask_count < self.num_masking_patches:
             max_mask_patches = self.num_masking_patches - mask_count
@@ -102,7 +102,7 @@ class VideoMaskGenerator:
         return self.length, self.height, self.width
 
     def spatial_mask(self):
-        mask = np.zeros(shape=self.get_shape(), dtype=np.int)
+        mask = np.zeros(shape=self.get_shape(), dtype=int)
 
 
         start_idx = random.randint(0, 3)
@@ -114,7 +114,7 @@ class VideoMaskGenerator:
         return mask
 
     def temporal_mask(self, idx=0):
-        mask = np.zeros(shape=self.get_shape(), dtype=np.int)
+        mask = np.zeros(shape=self.get_shape(), dtype=int)
         # Predict
         if idx == 0:
             mask[self.predict_given_frame_length:] = 1
@@ -123,15 +123,15 @@ class VideoMaskGenerator:
             mask[:-self.backward_given_frame_length] = 1
         # Interpreation
         elif idx == 2:
-            mask = np.ones(shape=self.get_shape(), dtype=np.int)
+            mask = np.ones(shape=self.get_shape(), dtype=int)
             mask[::self.interpreation_step] = 0
         # Unconditional Generation
         elif idx == 3:
-            mask = np.ones(shape=self.get_shape(), dtype=np.int)
+            mask = np.ones(shape=self.get_shape(), dtype=int)
         # Only one frames
         elif idx == 4:
             frame_idx = random.randint(0, mask.shape[0]-1)
-            mask = np.ones(shape=self.get_shape(), dtype=np.int)
+            mask = np.ones(shape=self.get_shape(), dtype=int)
             mask[frame_idx] = 0
         # MLM
         else:

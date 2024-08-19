@@ -7,12 +7,36 @@ from typing import Union
 import numpy as np
 from math import exp
 import lpips
+from fvd import get_fvd_feats, frechet_distance, load_i3d_pretrained
+from pathlib import Path
+import time
+import pickle
 from skimage.metrics import structural_similarity as ssim
 import torchvision.transforms as Transforms
 
-class MetricCalculator(nn.Module):
-    def __init__(self, metric_name_list, lpips_net = 'alex', scipy_ssim = False):
+class FVDFeatureExtractor(nn.Module):
+    def __init__(self):
         super().__init__()
+        self.i3d = load_i3d_pretrained()
+    
+    def forward(self, x, return_numpy = False):
+        N, T, C, _, _ = x.shape
+        if C == 1:
+            x = x.repeat(1, 1, 3, 1, 1)
+        x = x.permute(0, 2, 1, 3, 4)
+        embeddings = get_fvd_feats(x, i3d=self.i3d, bs=10)
+        if not return_numpy:
+            embeddings = torch.from_numpy(embeddings).to(x.device)
+
+        return embeddings
+
+def VarietyIndex(fvd, ave_inter_lpips):
+    return (1 - np.exp(-1./fvd)) * ave_inter_lpips
+
+class MetricCalculator(nn.Module):
+    def __init__(self, metric_name_list, lpips_net = 'alex', scipy_ssim = False, model_state='train'):
+        super().__init__()
+        self.model_state = model_state
         self.metric_funcs = {}
         for name in metric_name_list:
             if name == 'SSIM':
@@ -39,27 +63,36 @@ class MetricCalculator(nn.Module):
         pred: (N, num_sample, T, C, H, W)
         """
         metric_dict = {}
-        N, num_sample, T, _, _, _ = pred.shape
+        if self.model_state == 'train':
+            N, T, _, _, _ = pred.shape
+        else:
+            N, num_sample, T, _, _, _ = pred.shape
 
         for name, func in self.metric_funcs.items():
-            if name != 'InterLPIPS':
-                meters = []
-                for s in range(num_sample):
-                    meter = func(gt, pred[:, s, ...])
-                    meter = meter.reshape(N, T)
-                    meters.append(meter)
-                meters = torch.stack(meters, dim=0)
-                
-                vid_mean = meters.mean(dim = -1)
-                if name == 'LPIPS' or name == 'FVD':
-                    best_idx = torch.argmin(vid_mean, dim = 0)
-                else:
-                    best_idx = torch.argmax(vid_mean, dim = 0)
-                best_meter = meters[best_idx, torch.arange(0, N), :] #(N, T)
-                metric_dict[name] = best_meter.contiguous()
-            else:
+            if self.model_state == 'train':
                 meters = func(gt, pred)
+                if name != 'InterLPIPS':
+                    meters = meters.reshape(N, T)
                 metric_dict[name] = meters.contiguous()
+            else:
+                if name != 'InterLPIPS':
+                    meters = []
+                    for s in range(num_sample):
+                        meter = func(gt, pred[:, s, ...])
+                        meter = meter.reshape(N, T)
+                        meters.append(meter)
+                    meters = torch.stack(meters, dim=0)
+                    
+                    vid_mean = meters.mean(dim = -1)
+                    if name == 'LPIPS' or name == 'FVD':
+                        best_idx = torch.argmin(vid_mean, dim = 0)
+                    else:
+                        best_idx = torch.argmax(vid_mean, dim = 0)
+                    best_meter = meters[best_idx, torch.arange(0, N), :] #(N, T)
+                    metric_dict[name] = best_meter.contiguous()
+                else:
+                    meters = func(gt, pred)
+                    metric_dict[name] = meters.contiguous()
         
         return metric_dict
 
@@ -84,8 +117,7 @@ class MetricCalculator(nn.Module):
         return:
             m: (N*T) or (N, T)
         """
-        N, T, C, H, W = gt.shape
-        print(N, T, C, H, W)
+        N, T, C, _, _ = gt.shape
         if not self.scipy_ssim:
             m = self.ssim_func(gt.flatten(0, 1), pred.flatten(0, 1), mean_flag = False)
         else:
@@ -157,6 +189,58 @@ class MetricCalculator(nn.Module):
                 ssim_results[ii, jj] = ssim_val
         return torch.from_numpy(ssim_results).flatten().to(x_real.device)
 
+class AverageMeters(object):
+    def __init__(self, metric_name_list):
+        self.metric_name_list = metric_name_list
+        self.meters = {}
+        for name in metric_name_list:
+            self.meters[name] = BatchAverageMeter(name, ':.10e')
+    
+    def iter_update(self, iter_metric_dict):
+        for k, v in iter_metric_dict.items():
+            self.meters[k].update(v.mean(dim=0).cpu(), v.shape[0])
+    
+    def log_meter(self, log_path, avg_fvd = None):
+        with open(Path(log_path).joinpath("AverageMeters.pickle"), "wb") as file:
+            pickle.dump(self, file)
+        
+        #Print out the mean meters over the temporal dim
+        with open(Path(log_path).joinpath(time.asctime()+'AverageMeters.txt'), 'a') as f:
+            for k, v in self.meters.items():
+                mean_value = v.avg.mean().item()
+                if k == 'InterLPIPS' and v.avg[0] == 0:
+                    mean_value = v.avg[1:].mean().item()
+                print(k, v.avg, 'mean is:', mean_value, file=f)
+                print(k, v.avg, 'mean is:', mean_value)
+            
+            if avg_fvd is not None:
+                print('FVD is: ', avg_fvd, file=f)
+
+class BatchAverageMeter(object):
+    """Computes and stores the average and current value
+    https://github.com/pytorch/examples/blob/cedca7729fef11c91e28099a0e45d7e98d03b66d/imagenet/main.py#L363
+    """
+    def __init__(self, name, fmt=':f'):
+        self.name = name
+        self.fmt = fmt
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+    def __str__(self):
+        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        return fmtstr.format(**self.__dict__)
+
 def PSNR(x: Tensor, y: Tensor, data_range: Union[float, int] = 1.0, mean_flag: bool = True) -> Tensor:
     """
     Comput the average PSNR between two batch of images.
@@ -207,7 +291,6 @@ class SSIM(torch.nn.Module):
         Return:
             batch average ssim_index: float
         """
-        print(img1.shape)
         (_, channel, _, _) = img1.size()
 
         if channel == self.channel and self.window.data.type() == img1.data.type():
@@ -258,18 +341,15 @@ class SSIM(torch.nn.Module):
             return torch.mean(ssim_map, dim=(1,2,3))
 
 if __name__ == '__main__':
-    metric = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'])
-    random_img1 = torch.randn(1, 4, 3, 256, 256)
-    random_img2 = torch.randn(1, 4, 3, 256, 256)
+    ssim = SSIM()
     
-    print(metric.cal_ssim(random_img1, random_img2))
-    print(metric.cal_psnr(random_img1, random_img2))
-    print(metric.cal_lpips(random_img1, random_img2))
-    
-    # ssim = SSIM()
-    # ssim_index = ssim(random_img1, random_img2, mean_flag = False)
-    # psnr = PSNR(random_img1, random_img2, mean_flag = False)
-    # print(psnr)
+    random_img1 = torch.randn(4, 3, 256, 256)
+    random_img2 = torch.randn(4, 3, 256, 256)
+    ssim_index = ssim(random_img1, random_img2, mean_flag = False)
+    print(ssim_index)
+
+    psnr = PSNR(random_img1, random_img2, mean_flag = False)
+    print(psnr)
     """
     import torchvision.transforms as transforms
     from PIL import Image

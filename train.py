@@ -3,9 +3,9 @@ import random
 import argparse
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import tqdm
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from torchvision.utils import save_image
 from diffusers.models import AutoencoderKL
 
 from models import VDT_models
@@ -13,6 +13,8 @@ from utils import load_checkpoint
 from preprocess import FrameDataset
 from diffusion import create_diffusion
 from mask_generator import VideoMaskGenerator
+
+from metrics import MetricCalculator
 
 def train_vdt(model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, num_epochs=10, 
@@ -30,18 +32,17 @@ def train_vdt(model, train_dataloader, val_dataloader,
     - device: Device to run the training on (e.g., 'cuda' or 'cpu').
     - num_epochs: Number of epochs for training.
     - cfg_scale: Scale for classifier-free guidance.
-
-    - choice_index: Type of task
     """
     model.to(device)
     vae.to(device)
     
     criterion = nn.MSELoss()  # Assuming we're using MSE loss for simplicity
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], model_state='train')
 
     for epoch in range(num_epochs):
         running_loss = 0.0
         model.train()  # Set model to training mode
-        for batch_idx, x in enumerate(train_dataloader):
+        for batch_idx, x in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             B, T, C, H, W = x.shape
             x = x.to(device)  # Move data to device
 
@@ -50,15 +51,11 @@ def train_vdt(model, train_dataloader, val_dataloader,
                 latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
             latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             
-            # Generate mask
-            # Each iteration randomly choose task
+            # Generate mask and noise
             choice_idx = random.randint(0, 6)
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
-            mask = generator(B, device, idx=choice_idx)  # Assuming task type is 'predict'
-            
-            # Generate noise tensor z
-            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device)
-            z = z.permute(0, 2, 1, 3, 4)
+            mask = generator(B, device, idx=choice_idx)
+            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
             
             # Forward pass through the diffusion model
             sample_fn = model.forward
@@ -70,39 +67,35 @@ def train_vdt(model, train_dataloader, val_dataloader,
             samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
             
             # Decode generated samples back to image space
-            decoded_chunks = []
-            chunk_size = 256
-            num_chunks = (samples.shape[0] + chunk_size - 1) // chunk_size
-            for i in range(num_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, samples.shape[0])
-                chunk = samples[start_idx:end_idx]
-                decoded_chunk = vae.decode(chunk).sample
-                decoded_chunks.append(decoded_chunk)
-
-            decoded_samples = torch.cat(decoded_chunks, dim=0)
+            decoded_samples = decode_in_batches(samples, vae, chunk_size=256)
             decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
-            
-            # Compute loss between original and generated images
+            print(decoded_samples.shape)
+            # Compute loss
             loss = criterion(decoded_samples, x)
-            
-            # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            # Compute metrics
+            metrics = metrics_calculator(x, decoded_samples)
+            
             # Accumulate loss for logging
             running_loss += loss.item()
 
-            if batch_idx % 100 == 99:  # Log every 100 batches
-                print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], Loss: {running_loss / 100:.4f}")
-                running_loss = 0.0
+            # if batch_idx % 100 == 99:  # Log every 100 batches
+            print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
+                    f"Loss: {running_loss / num_epochs:.4f}, "
+                    f"SSIM: {metrics['SSIM'].mean():.4f}, "
+                    f"PSNR: {metrics['PSNR'].mean():.4f}, "
+                    f"LPIPS: {metrics['LPIPS'].mean():.4f}")
+                # running_loss = 0.0
 
         # Validation phase
         validate_vdt(model, val_dataloader, vae, diffusion, device)
 
     torch.save(model.state_dict(), 'vdt_model.pth')
     print("Training finished.")
+
 
 def validate_vdt(model, val_dataloader, vae, diffusion, device):
     """
@@ -114,11 +107,13 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device):
     - vae: Pre-trained VAE model for encoding/decoding images.
     - diffusion: Diffusion model.
     - device: Device to run the validation on (e.g., 'cuda' or 'cpu').
+    - metrics_calculator: MetricCalculator object to compute metrics.
     """
     model.eval()
     running_loss = 0.0
     criterion = nn.MSELoss()  # Assuming we're using MSE loss for simplicity
-    
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], model_state='val')
+
     with torch.no_grad():
         for _, x in enumerate(val_dataloader):
             B, T, C, H, W = x.shape
@@ -127,11 +122,11 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device):
             latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
             latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             
+            choice_idx = random.randint(0, 6)
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
-            mask = generator(B, device, idx=0)
+            mask = generator(B, device, idx=choice_idx)
             
-            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device)
-            z = z.permute(0, 2, 1, 3, 4)
+            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
             
             sample_fn = model.forward
             samples = diffusion.p_sample_loop(
@@ -141,24 +136,45 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device):
             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
             samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
             
-            decoded_chunks = []
-            chunk_size = 256
-            num_chunks = (samples.shape[0] + chunk_size - 1) // chunk_size
-            for i in range(num_chunks):
-                start_idx = i * chunk_size
-                end_idx = min((i + 1) * chunk_size, samples.shape[0])
-                chunk = samples[start_idx:end_idx]
-                decoded_chunk = vae.decode(chunk).sample
-                decoded_chunks.append(decoded_chunk)
-
-            decoded_samples = torch.cat(decoded_chunks, dim=0)
+            decoded_samples = decode_in_batches(samples, vae, chunk_size=256)
             decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
             
             loss = criterion(decoded_samples, x)
             running_loss += loss.item()
+            
+            # Compute validation metrics
+            metrics = metrics_calculator(x, decoded_samples)
 
     avg_loss = running_loss / len(val_dataloader)
-    print(f"Validation Loss: {avg_loss:.4f}")
+    print(f"Validation Loss: {avg_loss:.4f}, "
+          f"SSIM: {metrics['SSIM'].mean():.4f}, "
+          f"PSNR: {metrics['PSNR'].mean():.4f}, "
+          f"LPIPS: {metrics['LPIPS'].mean():.4f}")
+
+
+def decode_in_batches(samples, vae, chunk_size=256):
+    """
+    Helper function to decode samples in batches to avoid memory overflow.
+
+    Parameters:
+    - samples: Latent representations to decode.
+    - vae: VAE model to decode latents.
+    - chunk_size: Size of chunks for batch decoding.
+    
+    Returns:
+    - Decoded samples concatenated back together.
+    """
+    decoded_chunks = []
+    num_chunks = (samples.shape[0] + chunk_size - 1) // chunk_size
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, samples.shape[0])
+        chunk = samples[start_idx:end_idx]
+        decoded_chunk = vae.decode(chunk).sample
+        decoded_chunks.append(decoded_chunk)
+
+    return torch.cat(decoded_chunks, dim=0)
+
 
 # Example usage:
 if __name__ == "__main__":
