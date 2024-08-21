@@ -20,28 +20,18 @@ def train_vdt(model, train_dataloader, val_dataloader,
               vae, diffusion, optimizer, device, num_epochs=10, 
               cfg_scale=1.0):
     """
-    Training loop for VDT model.
-
     Parameters:
-    - model: The VDT model.
-    - train_dataloader: DataLoader for training data.
-    - val_dataloader: DataLoader for validation data.
-    - vae: Pre-trained VAE model for encoding/decoding images.
-    - diffusion: Diffusion model.
-    - optimizer: Optimizer (e.g., Adam).
-    - device: Device to run the training on (e.g., 'cuda' or 'cpu').
-    - num_epochs: Number of epochs for training.
-    - cfg_scale: Scale for classifier-free guidance.
+        - cfg_scale: Scale for classifier-free guidance.
     """
     model.to(device)
     vae.to(device)
     
-    criterion = nn.MSELoss()  # Assuming we're using MSE loss for simplicity
+    criterion = nn.MSELoss()
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], model_state='train')
 
     for epoch in range(num_epochs):
         running_loss = 0.0
-        model.train()  # Set model to training mode
+        model.train()
         for batch_idx, x in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             B, T, C, H, W = x.shape
             x = x.to(device)  # Move data to device
@@ -69,50 +59,40 @@ def train_vdt(model, train_dataloader, val_dataloader,
             # Decode generated samples back to image space
             decoded_samples = decode_in_batches(samples, vae, chunk_size=256)
             decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
-            print(decoded_samples.shape)
-            # Compute loss
+
             loss = criterion(decoded_samples, x)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # Compute metrics
             metrics = metrics_calculator(x, decoded_samples)
             
-            # Accumulate loss for logging
             running_loss += loss.item()
 
             # if batch_idx % 100 == 99:  # Log every 100 batches
             print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
-                    f"Loss: {running_loss / num_epochs:.4f}, "
+                    f"Loss: {loss.item() / num_epochs:.4f}, "
                     f"SSIM: {metrics['SSIM'].mean():.4f}, "
                     f"PSNR: {metrics['PSNR'].mean():.4f}, "
                     f"LPIPS: {metrics['LPIPS'].mean():.4f}")
-                # running_loss = 0.0
 
-        # Validation phase
-        validate_vdt(model, val_dataloader, vae, diffusion, device)
+        print(f"End Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
+            f"End Loss: {running_loss / num_epochs:.4f}, "
+            f"End SSIM: {metrics['SSIM'].mean():.4f}, "
+            f"End PSNR: {metrics['PSNR'].mean():.4f}, "
+            f"End LPIPS: {metrics['LPIPS'].mean():.4f}")
+        
+        validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator)
 
     torch.save(model.state_dict(), 'vdt_model.pth')
     print("Training finished.")
 
 
-def validate_vdt(model, val_dataloader, vae, diffusion, device):
-    """
-    Validation loop for VDT model.
-    
-    Parameters:
-    - model: The VDT model.
-    - val_dataloader: DataLoader for validation data.
-    - vae: Pre-trained VAE model for encoding/decoding images.
-    - diffusion: Diffusion model.
-    - device: Device to run the validation on (e.g., 'cuda' or 'cpu').
-    - metrics_calculator: MetricCalculator object to compute metrics.
-    """
+def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator):
+
     model.eval()
     running_loss = 0.0
-    criterion = nn.MSELoss()  # Assuming we're using MSE loss for simplicity
-    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], model_state='val')
+    criterion = nn.MSELoss()
 
     with torch.no_grad():
         for _, x in enumerate(val_dataloader):
@@ -142,14 +122,13 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device):
             loss = criterion(decoded_samples, x)
             running_loss += loss.item()
             
-            # Compute validation metrics
             metrics = metrics_calculator(x, decoded_samples)
 
     avg_loss = running_loss / len(val_dataloader)
     print(f"Validation Loss: {avg_loss:.4f}, "
-          f"SSIM: {metrics['SSIM'].mean():.4f}, "
-          f"PSNR: {metrics['PSNR'].mean():.4f}, "
-          f"LPIPS: {metrics['LPIPS'].mean():.4f}")
+          f"Validation SSIM: {metrics['SSIM'].mean():.4f}, "
+          f"Validation PSNR: {metrics['PSNR'].mean():.4f}, "
+          f"Validation LPIPS: {metrics['LPIPS'].mean():.4f}")
 
 
 def decode_in_batches(samples, vae, chunk_size=256):
@@ -175,8 +154,6 @@ def decode_in_batches(samples, vae, chunk_size=256):
 
     return torch.cat(decoded_chunks, dim=0)
 
-
-# Example usage:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, choices=list(VDT_models.keys()), default="VDT-L/2")
@@ -192,10 +169,11 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=str, default="model.pt",
                         help="Optional path to a VDT checkpoint.")
     parser.add_argument('--device', default='cuda')
+    parser.add_argument('--epoch', type=int, default=2)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    print(device)
     transform = transforms.Compose([
         transforms.ToTensor(),
     ])
@@ -219,4 +197,5 @@ if __name__ == "__main__":
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     
-    train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, num_epochs=20, cfg_scale=1.0)
+    torch.cuda.empty_cache()
+    train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, num_epochs=args.epoch, cfg_scale=1.0)

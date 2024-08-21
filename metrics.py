@@ -63,36 +63,40 @@ class MetricCalculator(nn.Module):
         pred: (N, num_sample, T, C, H, W)
         """
         metric_dict = {}
-        if self.model_state == 'train':
-            N, T, _, _, _ = pred.shape
-        else:
-            N, num_sample, T, _, _, _ = pred.shape
+        gt = gt.to('cpu')
+        pred = pred.to('cpu')
+        print(self.model_state)
+        print(self.model_state in ['train', 'val'])
+        # if self.model_state in ['train', 'val']:
+        N, T, _, _, _ = pred.shape
+        # else:
+        #     N, num_sample, T, _, _, _ = pred.shape
 
         for name, func in self.metric_funcs.items():
-            if self.model_state == 'train':
-                meters = func(gt, pred)
-                if name != 'InterLPIPS':
-                    meters = meters.reshape(N, T)
-                metric_dict[name] = meters.contiguous()
-            else:
-                if name != 'InterLPIPS':
-                    meters = []
-                    for s in range(num_sample):
-                        meter = func(gt, pred[:, s, ...])
-                        meter = meter.reshape(N, T)
-                        meters.append(meter)
-                    meters = torch.stack(meters, dim=0)
+            # if self.model_state == ['train', 'val']:
+            meters = func(gt, pred)
+            if name != 'InterLPIPS':
+                meters = meters.reshape(N, T)
+            metric_dict[name] = meters.contiguous()
+            # else:
+            #     if name != 'InterLPIPS':
+            #         meters = []
+            #         for s in range(num_sample):
+            #             meter = func(gt, pred[:, s, ...])
+            #             meter = meter.reshape(N, T)
+            #             meters.append(meter)
+            #         meters = torch.stack(meters, dim=0)
                     
-                    vid_mean = meters.mean(dim = -1)
-                    if name == 'LPIPS' or name == 'FVD':
-                        best_idx = torch.argmin(vid_mean, dim = 0)
-                    else:
-                        best_idx = torch.argmax(vid_mean, dim = 0)
-                    best_meter = meters[best_idx, torch.arange(0, N), :] #(N, T)
-                    metric_dict[name] = best_meter.contiguous()
-                else:
-                    meters = func(gt, pred)
-                    metric_dict[name] = meters.contiguous()
+            #         vid_mean = meters.mean(dim = -1)
+            #         if name == 'LPIPS' or name == 'FVD':
+            #             best_idx = torch.argmin(vid_mean, dim = 0)
+            #         else:
+            #             best_idx = torch.argmax(vid_mean, dim = 0)
+            #         best_meter = meters[best_idx, torch.arange(0, N), :] #(N, T)
+            #         metric_dict[name] = best_meter.contiguous()
+            #     else:
+            #         meters = func(gt, pred)
+            #         metric_dict[name] = meters.contiguous()
         
         return metric_dict
 
