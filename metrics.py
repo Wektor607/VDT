@@ -3,40 +3,17 @@ from torch import nn
 import torch.nn.functional as F
 from torch import Tensor
 from typing import Union
-
+from scipy.linalg import sqrtm
 import numpy as np
 from math import exp
 import lpips
-from fvd import get_fvd_feats, frechet_distance, load_i3d_pretrained
-from pathlib import Path
-import time
-import pickle
-from skimage.metrics import structural_similarity as ssim
+from typing import Tuple
 import torchvision.transforms as Transforms
 
-class FVDFeatureExtractor(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.i3d = load_i3d_pretrained()
-    
-    def forward(self, x, return_numpy = False):
-        N, T, C, _, _ = x.shape
-        if C == 1:
-            x = x.repeat(1, 1, 3, 1, 1)
-        x = x.permute(0, 2, 1, 3, 4)
-        embeddings = get_fvd_feats(x, i3d=self.i3d, bs=10)
-        if not return_numpy:
-            embeddings = torch.from_numpy(embeddings).to(x.device)
-
-        return embeddings
-
-def VarietyIndex(fvd, ave_inter_lpips):
-    return (1 - np.exp(-1./fvd)) * ave_inter_lpips
 
 class MetricCalculator(nn.Module):
-    def __init__(self, metric_name_list, lpips_net = 'alex', scipy_ssim = False, model_state='train'):
+    def __init__(self, metric_name_list, lpips_net = 'alex', scipy_ssim = False):
         super().__init__()
-        self.model_state = model_state
         self.metric_funcs = {}
         for name in metric_name_list:
             if name == 'SSIM':
@@ -55,6 +32,9 @@ class MetricCalculator(nn.Module):
             elif name == 'InterLPIPS':
                 self.lpips_fn = lpips.LPIPS(net=lpips_net)
                 self.metric_funcs['InterLPIPS'] = self.inter_lpips
+            elif name == 'FVD':
+                self.metric_funcs['FVD'] = self.frechet_distance
+
 
     @torch.no_grad()
     def __call__(self, gt, pred):
@@ -63,40 +43,13 @@ class MetricCalculator(nn.Module):
         pred: (N, num_sample, T, C, H, W)
         """
         metric_dict = {}
-        gt = gt.to('cpu')
-        pred = pred.to('cpu')
-        print(self.model_state)
-        print(self.model_state in ['train', 'val'])
-        # if self.model_state in ['train', 'val']:
+        
         N, T, _, _, _ = pred.shape
-        # else:
-        #     N, num_sample, T, _, _, _ = pred.shape
-
         for name, func in self.metric_funcs.items():
-            # if self.model_state == ['train', 'val']:
             meters = func(gt, pred)
             if name != 'InterLPIPS':
                 meters = meters.reshape(N, T)
             metric_dict[name] = meters.contiguous()
-            # else:
-            #     if name != 'InterLPIPS':
-            #         meters = []
-            #         for s in range(num_sample):
-            #             meter = func(gt, pred[:, s, ...])
-            #             meter = meter.reshape(N, T)
-            #             meters.append(meter)
-            #         meters = torch.stack(meters, dim=0)
-                    
-            #         vid_mean = meters.mean(dim = -1)
-            #         if name == 'LPIPS' or name == 'FVD':
-            #             best_idx = torch.argmin(vid_mean, dim = 0)
-            #         else:
-            #             best_idx = torch.argmax(vid_mean, dim = 0)
-            #         best_meter = meters[best_idx, torch.arange(0, N), :] #(N, T)
-            #         metric_dict[name] = best_meter.contiguous()
-            #     else:
-            #         meters = func(gt, pred)
-            #         metric_dict[name] = meters.contiguous()
         
         return metric_dict
 
@@ -192,58 +145,21 @@ class MetricCalculator(nn.Module):
                 ssim_val = ssim(fake_grey, real_grey, data_range=255, gaussian_weights=True, use_sample_covariance=False)
                 ssim_results[ii, jj] = ssim_val
         return torch.from_numpy(ssim_results).flatten().to(x_real.device)
-
-class AverageMeters(object):
-    def __init__(self, metric_name_list):
-        self.metric_name_list = metric_name_list
-        self.meters = {}
-        for name in metric_name_list:
-            self.meters[name] = BatchAverageMeter(name, ':.10e')
     
-    def iter_update(self, iter_metric_dict):
-        for k, v in iter_metric_dict.items():
-            self.meters[k].update(v.mean(dim=0).cpu(), v.shape[0])
-    
-    def log_meter(self, log_path, avg_fvd = None):
-        with open(Path(log_path).joinpath("AverageMeters.pickle"), "wb") as file:
-            pickle.dump(self, file)
-        
-        #Print out the mean meters over the temporal dim
-        with open(Path(log_path).joinpath(time.asctime()+'AverageMeters.txt'), 'a') as f:
-            for k, v in self.meters.items():
-                mean_value = v.avg.mean().item()
-                if k == 'InterLPIPS' and v.avg[0] == 0:
-                    mean_value = v.avg[1:].mean().item()
-                print(k, v.avg, 'mean is:', mean_value, file=f)
-                print(k, v.avg, 'mean is:', mean_value)
-            
-            if avg_fvd is not None:
-                print('FVD is: ', avg_fvd, file=f)
+    def compute_stats(self, feats: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        B, T, _, _, _ = feats.shape
+        feats = feats.reshape(B * T, -1)
+        mu = feats.mean(axis=0) # [d]
+        sigma = np.cov(feats, rowvar=False) # [d, d]
+        return mu, sigma
 
-class BatchAverageMeter(object):
-    """Computes and stores the average and current value
-    https://github.com/pytorch/examples/blob/cedca7729fef11c91e28099a0e45d7e98d03b66d/imagenet/main.py#L363
-    """
-    def __init__(self, name, fmt=':f'):
-        self.name = name
-        self.fmt = fmt
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-    def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-        return fmtstr.format(**self.__dict__)
+    def frechet_distance(self, feats_real: np.ndarray, feats_fake: np.ndarray) -> float:
+        mu_gen, sigma_gen = self.compute_stats(feats_fake)
+        mu_real, sigma_real = self.compute_stats(feats_real)
+        m = np.square(mu_gen - mu_real).sum()
+        s, _ = sqrtm(np.dot(sigma_gen, sigma_real), disp=False) # pylint: disable=no-member
+        fid = np.real(m + np.trace(sigma_gen + sigma_real - s * 2))
+        return float(fid)
 
 def PSNR(x: Tensor, y: Tensor, data_range: Union[float, int] = 1.0, mean_flag: bool = True) -> Tensor:
     """

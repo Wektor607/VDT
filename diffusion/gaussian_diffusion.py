@@ -286,6 +286,7 @@ class GaussianDiffusion:
 
         if not self.training and mask is not None:
             model_input = raw_x.permute(2, 0, 1, 3, 4) * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask
+            # model_input = raw_x * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask
             model_input = model_input.permute(1, 2, 0, 3, 4)
             model_output = model(model_input, t, **model_kwargs)
         else:
@@ -591,6 +592,7 @@ class GaussianDiffusion:
             model_kwargs = {}
         if noise is None:
             noise = th.randn_like(x_start)
+        
         x_t = self.q_sample(x_start, t, noise=noise)
 
         terms = {}
@@ -639,6 +641,7 @@ class GaussianDiffusion:
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape #([2, 4, 16, 16, 16]
 
+            terms["output"] = model_output
             terms["mse"] = mean_flat(((target - model_output).permute(1, 0, 2, 3, 4) * mask).permute(1, 0, 2, 3, 4)  ** 2)
             if "vb" in terms:
                 terms["loss"] = terms["mse"] + terms["vb"]
@@ -648,8 +651,6 @@ class GaussianDiffusion:
             raise NotImplementedError(self.loss_type)
 
         return terms
-
-
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
