@@ -9,12 +9,13 @@ from math import exp
 import lpips
 from typing import Tuple
 import torchvision.transforms as Transforms
-
+from fvd import load_i3d_pretrained, get_fvd_feats, frechet_distance
 
 class MetricCalculator(nn.Module):
-    def __init__(self, metric_name_list, lpips_net = 'alex', scipy_ssim = False):
+    def __init__(self, metric_name_list, device, lpips_net = 'alex', scipy_ssim = False):
         super().__init__()
         self.metric_funcs = {}
+        self.device = device
         for name in metric_name_list:
             if name == 'SSIM':
                 self.scipy_ssim = scipy_ssim
@@ -33,7 +34,8 @@ class MetricCalculator(nn.Module):
                 self.lpips_fn = lpips.LPIPS(net=lpips_net)
                 self.metric_funcs['InterLPIPS'] = self.inter_lpips
             elif name == 'FVD':
-                self.metric_funcs['FVD'] = self.frechet_distance
+                self.i3d_model = load_i3d_pretrained(device=self.device)
+                self.metric_funcs['FVD'] = self.cal_fvd
 
 
     @torch.no_grad()
@@ -47,9 +49,12 @@ class MetricCalculator(nn.Module):
         N, T, _, _, _ = pred.shape
         for name, func in self.metric_funcs.items():
             meters = func(gt, pred)
-            if name != 'InterLPIPS':
-                meters = meters.reshape(N, T)
-            metric_dict[name] = meters.contiguous()
+            if name != 'FVD':
+                if name != 'InterLPIPS':
+                    meters = meters.reshape(N, T)
+                metric_dict[name] = meters.contiguous()
+            else:
+                metric_dict[name] = meters
         
         return metric_dict
 
@@ -146,21 +151,25 @@ class MetricCalculator(nn.Module):
                 ssim_results[ii, jj] = ssim_val
         return torch.from_numpy(ssim_results).flatten().to(x_real.device)
     
-    def compute_stats(self, feats: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        B, T, _, _, _ = feats.shape
-        feats = feats.reshape(B * T, -1)
-        mu = feats.mean(axis=0) # [d]
-        sigma = np.cov(feats, rowvar=False) # [d, d]
-        return mu, sigma
+    def cal_fvd(self, gt, pred):
+        """
+        Calculate FVD using the I3D model.
+        gt/pred: (N, T, C, H, W) - ground truth and predicted videos.
+        """
+        # Extract features using I3D model
+        # print(gt.shape)
+        _, T, _, _, _ = gt.shape
+        gt = gt.permute(0, 2, 1, 3, 4)
+        gt_feats = get_fvd_feats(gt, self.i3d_model, device=self.device, bs=T)
 
-    def frechet_distance(self, feats_real: np.ndarray, feats_fake: np.ndarray) -> float:
-        mu_gen, sigma_gen = self.compute_stats(feats_fake)
-        mu_real, sigma_real = self.compute_stats(feats_real)
-        m = np.square(mu_gen - mu_real).sum()
-        s, _ = sqrtm(np.dot(sigma_gen, sigma_real), disp=False) # pylint: disable=no-member
-        fid = np.real(m + np.trace(sigma_gen + sigma_real - s * 2))
-        return float(fid)
+        pred = pred.permute(0, 2, 1, 3, 4)
+        pred_feats = get_fvd_feats(pred, self.i3d_model, device=self.device, bs=T)
 
+        # Compute FVD between ground truth and predicted features
+        fvd_score = frechet_distance(gt_feats, pred_feats)
+        print(torch.tensor([fvd_score], device=self.device))
+        return fvd_score
+    
 def PSNR(x: Tensor, y: Tensor, data_range: Union[float, int] = 1.0, mean_flag: bool = True) -> Tensor:
     """
     Comput the average PSNR between two batch of images.

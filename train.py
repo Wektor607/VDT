@@ -30,35 +30,32 @@ def train_vdt(model, train_dataloader, val_dataloader,
     for param in vae.parameters():
         param.requires_grad = False
 
-    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'])
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
 
     for epoch in range(num_epochs):
         running_loss = 0.0
         model.train()
+        print(epoch)
         for batch_idx, x in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             B, T, C, H, W = x.shape
             x = x.to(device)
 
             # Encode frames to latent space
-            print(f'Encode frames to latent space: {epoch}')
             with torch.no_grad():
                 latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
             
             latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             
             # Generate mask
-            print(f'Generate mask: {epoch}')
             choice_idx = random.randint(0, 6)
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
             mask = generator(B, device, idx=choice_idx)
             
             # Create time step
-            print(f'Create time step: {epoch}')
             t = torch.randint(0, diffusion.num_timesteps, (B,), device=device).long()
             latent_x = latent_x.to(device)
 
             # Forward pass through the diffusion model
-            print(f'Forward pass through the diffusion model: {epoch}')
             sample_fn = model.forward
             # The noise was created by the train function
             results = diffusion.training_losses(sample_fn, latent_x, t, 
@@ -68,30 +65,28 @@ def train_vdt(model, train_dataloader, val_dataloader,
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            
-            running_loss += loss.item()
+            torch.cuda.empty_cache()
 
+            running_loss += loss.item()
+            
             if batch_idx % 100 == 0:
                 samples = results['output'].clone()
                 samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
                 samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
-                
                 decoded_samples = decode_in_batches(samples, vae, chunk_size=256)
                 decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
-                
                 metrics = metrics_calculator(x.to('cpu'), decoded_samples.to('cpu'))
-
                 print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
                         f"Loss: {running_loss / num_epochs:.4f}, "
-                        f"SSIM: {metrics['SSIM']:.4f}, "
-                        f"PSNR: {metrics['PSNR']:.4f}, "
-                        f"LPIPS: {metrics['LPIPS']:.4f}, "
+                        f"SSIM: {metrics['SSIM'].mean():.4f}, "
+                        f"PSNR: {metrics['PSNR'].mean():.4f}, "
+                        f"LPIPS: {metrics['LPIPS'].mean():.4f}, "
                         f"FVD: {metrics['FVD']:.4f}, ")
                 running_loss = 0.0
-
+        
         validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator)
-
-    torch.save(model.state_dict(), 'vdt_model.pth')
+        diffusion.training = True
+    torch.save(model.state_dict(), 'vdt_model.pt')
     print("Training finished.")
 
 
@@ -106,6 +101,7 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
     psnr_scores  = []
     lpips_scores = []
     fvd_scores   = []
+    diffusion.training = False
     with torch.no_grad():
         for _, x in enumerate(val_dataloader):
             B, T, C, H, W = x.shape
@@ -136,10 +132,10 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
             running_loss += loss.item()
                             
             metrics = metrics_calculator(x.to('cpu'), decoded_samples.to('cpu'))
-            ssim_scores.append(metrics['SSIM'].item())
-            psnr_scores.append(metrics['PSNR'].item())
-            lpips_scores.append(metrics['LPIPS'].item())
-            fvd_scores.append(metrics['FVD'].item())
+            ssim_scores.append(metrics['SSIM'].mean())
+            psnr_scores.append(metrics['PSNR'].mean())
+            lpips_scores.append(metrics['LPIPS'].mean())
+            fvd_scores.append(metrics['FVD'])
 
     avg_ssim = sum(ssim_scores) / len(ssim_scores)
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
@@ -152,6 +148,71 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
           f"Validation PSNR: {avg_psnr:.4f}, "
           f"Validation LPIPS: {avg_lpips:.4f}, "
           f"Validation FVD: {avg_fvd:.4f} ")
+
+# def test_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator):
+
+#     model.eval()
+#     vae.eval()
+#     running_loss = 0.0
+#     criterion = nn.MSELoss()
+
+#     ssim_scores  = []
+#     psnr_scores  = []
+#     lpips_scores = []
+#     # fvd_scores   = []
+#     diffusion.training = False
+#     with torch.no_grad():
+#         for _, x in enumerate(val_dataloader):
+#             B, T, C, H, W = x.shape
+#             x = x.to(device)
+            
+#             latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
+#             latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
+            
+#             choice_idx = random.randint(0, 6)
+#             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
+#             mask = generator(B, device, idx=choice_idx)
+            
+#             z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
+#             latent_x = latent_x.to(device)
+
+#             sample_fn = model.forward
+#             samples = diffusion.p_sample_loop(
+#                 sample_fn, z.shape, z, clip_denoised=False, progress=False, device=device,
+#                 raw_x=latent_x, mask=mask
+#             )
+#             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
+#             samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
+            
+#             decoded_samples = decode_in_batches(samples, vae, chunk_size=256)
+#             decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
+
+#             mask = F.interpolate(mask.float(), size=(raw_x.shape[-2], raw_x.shape[-1]), mode='nearest')
+#             mask = mask.unsqueeze(0).repeat(3,1,1,1,1).permute(1, 2, 0, 3, 4) 
+
+#             raw_x = raw_x.reshape(-1, args.num_frames, raw_x.shape[-3], raw_x.shape[-2], raw_x.shape[-1])
+#             raw_x = raw_x * (1 - mask)
+
+#             loss = criterion(decoded_samples, x)
+#             running_loss += loss.item()
+                            
+#             metrics = metrics_calculator(x.to('cpu'), decoded_samples.to('cpu'))
+#             ssim_scores.append(metrics['SSIM'].mean())
+#             psnr_scores.append(metrics['PSNR'].mean())
+#             lpips_scores.append(metrics['LPIPS'].mean())
+#             # fvd_scores.append(metrics['FVD'].item())
+
+#     avg_ssim = sum(ssim_scores) / len(ssim_scores)
+#     avg_psnr = sum(psnr_scores) / len(psnr_scores)
+#     avg_lpips = sum(lpips_scores) / len(lpips_scores)
+#     # avg_fvd = sum(fvd_scores) / len(fvd_scores)
+#     avg_loss = running_loss / len(val_dataloader)
+
+#     print(f"Validation Loss: {avg_loss:.4f}, "
+#           f"Validation SSIM: {avg_ssim:.4f}, "
+#           f"Validation PSNR: {avg_psnr:.4f}, "
+#           f"Validation LPIPS: {avg_lpips:.4f}, ")
+#         #   f"Validation FVD: {avg_fvd:.4f} ")
 
 
 

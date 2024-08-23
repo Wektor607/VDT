@@ -301,6 +301,9 @@ class GaussianDiffusion:
             extra = None
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
+            # if not (model_output.shape == (B, C * 2, *x.shape[2:])): 
+            #     model_output = model_output.permute(0, 2, 1, 3, 4)
+
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
             min_log = _extract_into_tensor(self.posterior_log_variance_clipped, t, x.shape)
@@ -596,7 +599,6 @@ class GaussianDiffusion:
         x_t = self.q_sample(x_start, t, noise=noise)
 
         terms = {}
-
         if self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
             x_t = x_t.permute(0, 2, 1, 3, 4)
             # mask, C B T H W
@@ -618,7 +620,6 @@ class GaussianDiffusion:
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
                 frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
-
                 terms["vb"] = self._vb_terms_bpd(
                     model=lambda *args, r=frozen_out: r,
                     x_start=x_start,
@@ -627,11 +628,12 @@ class GaussianDiffusion:
                     clip_denoised=False,
                     mask=mask
                 )["output"]
+
                 if self.loss_type == LossType.RESCALED_MSE:
                     # Divide by 1000 for equivalence with initial implementation.
                     # Without a factor of 1/1000, the VB term hurts the MSE term.
                     terms["vb"] *= self.num_timesteps / 1000.0
-
+            
             target = {
                 ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
                     x_start=x_start, x_t=x_t, t=t
@@ -640,7 +642,7 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape #([2, 4, 16, 16, 16]
-
+            
             terms["output"] = model_output
             terms["mse"] = mean_flat(((target - model_output).permute(1, 0, 2, 3, 4) * mask).permute(1, 0, 2, 3, 4)  ** 2)
             if "vb" in terms:
