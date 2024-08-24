@@ -301,9 +301,6 @@ class GaussianDiffusion:
             extra = None
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
-            # if not (model_output.shape == (B, C * 2, *x.shape[2:])): 
-            #     model_output = model_output.permute(0, 2, 1, 3, 4)
-
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
             min_log = _extract_into_tensor(self.posterior_log_variance_clipped, t, x.shape)
