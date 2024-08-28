@@ -285,8 +285,8 @@ class GaussianDiffusion:
         x = x.permute(0, 2, 1, 3, 4)
 
         if not self.training and mask is not None:
-            model_input = raw_x.permute(2, 0, 1, 3, 4) * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask
-            # model_input = raw_x * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask
+            model_input = raw_x.permute(2, 0, 1, 3, 4) * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask # My implementation
+            # model_input = raw_x * (1-mask) + x.permute(2, 0, 1, 3, 4) * mask 
             model_input = model_input.permute(1, 2, 0, 3, 4)
             model_output = model(model_input, t, **model_kwargs)
         else:

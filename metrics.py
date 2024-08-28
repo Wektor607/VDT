@@ -167,7 +167,6 @@ class MetricCalculator(nn.Module):
 
         # Compute FVD between ground truth and predicted features
         fvd_score = frechet_distance(gt_feats, pred_feats)
-        print(torch.tensor([fvd_score], device=self.device))
         return fvd_score
     
 def PSNR(x: Tensor, y: Tensor, data_range: Union[float, int] = 1.0, mean_flag: bool = True) -> Tensor:
@@ -274,11 +273,12 @@ if __name__ == '__main__':
     
     random_img1 = torch.randn(4, 3, 256, 256)
     random_img2 = torch.randn(4, 3, 256, 256)
-    ssim_index = ssim(random_img1, random_img2, mean_flag = False)
-    print(ssim_index)
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], device='cpu')
+    # ssim_index = ssim(random_img1, random_img2, mean_flag = False)
+    # print(ssim_index)
 
-    psnr = PSNR(random_img1, random_img2, mean_flag = False)
-    print(psnr)
+    # psnr = PSNR(random_img1, random_img2, mean_flag = False)
+    # print(psnr)
     """
     import torchvision.transforms as transforms
     from PIL import Image

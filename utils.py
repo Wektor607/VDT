@@ -23,7 +23,8 @@ import os
 import time
 from collections import defaultdict, deque
 import datetime
-
+import sys
+import logging
 import torch
 import torch.distributed as dist
 
@@ -305,7 +306,7 @@ def interpolate_pos_embed(pos_embed_checkpoint, visual_encoder):
 
 def load_checkpoint(model, model_name):
     state_dict = torch.load(model_name, map_location='cpu')
-
+    print(state_dict)
     state_dict['pos_embed'] = interpolate_pos_embed(state_dict['pos_embed'],model) 
  
     for key in model.state_dict().keys():
@@ -319,3 +320,45 @@ def load_checkpoint(model, model_name):
     msg = model.load_state_dict(state_dict,strict=False)
     # print('load checkpoint from %s'%url_or_filename)  
     return model,msg
+
+def load_checkpoint_ddp(model, model_name):
+    state_dict = torch.load(model_name, map_location='cpu')
+    state_dict['module.pos_embed'] = interpolate_pos_embed(state_dict['module.pos_embed'],model) 
+ 
+    for key in model.state_dict().keys():
+        if key in state_dict.keys():
+            if state_dict[key].shape!=model.state_dict()[key].shape:
+                print('state_dict[key].shape', key, state_dict[key].shape)
+                print('model.state_dict()[key].shape', key, model.state_dict()[key].shape)
+                del state_dict[key]
+    
+    msg = model.load_state_dict(state_dict,strict=False)
+    # print('load checkpoint from %s'%url_or_filename)  
+    return model,msg
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler("training.log"),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
+def ddp_setup():
+    dist.init_process_group(backend="nccl")
+
+def decode_in_batches(samples, vae, chunk_size=256):
+    decoded_chunks = []
+    num_chunks = (samples.shape[0] + chunk_size - 1) // chunk_size
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, samples.shape[0])
+        chunk = samples[start_idx:end_idx]
+        decoded_chunk = vae.decode(chunk).sample
+        decoded_chunks.append(decoded_chunk)
+        torch.cuda.empty_cache()
+
+    return torch.cat(decoded_chunks, dim=0)

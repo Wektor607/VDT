@@ -284,9 +284,15 @@ def frechet_distance(feats_fake: np.ndarray, feats_real: np.ndarray) -> float:
     mu_gen, sigma_gen = compute_stats(feats_fake)
     mu_real, sigma_real = compute_stats(feats_real)
     m = np.square(mu_gen - mu_real).sum()
-    s, _ = sqrtm(np.dot(sigma_gen, sigma_real), disp=False) # pylint: disable=no-member
-    fid = np.real(m + np.trace(sigma_gen + sigma_real - s * 2))
-    return float(fid)
+    if isinstance(sigma_gen, np.ndarray) and isinstance(sigma_real, np.ndarray):
+        if sigma_gen.ndim == 2 and sigma_real.ndim == 2:
+            # Ваш код
+            s, _ = sqrtm(np.dot(sigma_gen, sigma_real), disp=False) # pylint: disable=no-member
+            fid = np.real(m + np.trace(sigma_gen + sigma_real - s * 2))
+            return float(fid)
+        else:
+            raise ValueError("sigma_gen и sigma_real должны быть двумерными массивами.")
+    return 0
 
 #https://github.com/NVlabs/long-video-gan/blob/f190c127525e665753c053e56e3e1d9091458bc8/metrics/metric_utils.py
 class FeatureStats:
