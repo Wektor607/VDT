@@ -321,21 +321,6 @@ def load_checkpoint(model, model_name):
     # print('load checkpoint from %s'%url_or_filename)  
     return model,msg
 
-def load_checkpoint_ddp(model, model_name):
-    state_dict = torch.load(model_name, map_location='cpu')
-    state_dict['module.pos_embed'] = interpolate_pos_embed(state_dict['module.pos_embed'],model) 
- 
-    for key in model.state_dict().keys():
-        if key in state_dict.keys():
-            if state_dict[key].shape!=model.state_dict()[key].shape:
-                print('state_dict[key].shape', key, state_dict[key].shape)
-                print('model.state_dict()[key].shape', key, model.state_dict()[key].shape)
-                del state_dict[key]
-    
-    msg = model.load_state_dict(state_dict,strict=False)
-    # print('load checkpoint from %s'%url_or_filename)  
-    return model,msg
-
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
@@ -345,7 +330,6 @@ def setup_logging():
             logging.StreamHandler(sys.stdout)
         ]
     )
-
 
 def ddp_setup():
     dist.init_process_group(backend="nccl")

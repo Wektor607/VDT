@@ -21,12 +21,13 @@ from diffusion import create_diffusion
 from metrics import MetricCalculator
 from diffusers.models import AutoencoderKL
 from mask_generator import VideoMaskGenerator
+from utils import load_checkpoint
 from utils import setup_logging, ddp_setup, decode_in_batches
 
 def train_vdt(model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, metrics_calculator, num_epochs=10,
               cfg_scale=1.0):
-    model.to(device)
+    # model.to(device)
 
     for epoch in range(num_epochs):
         running_loss = 0.0
@@ -148,7 +149,8 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
         #   f"Validation FVD: {avg_fvd:.4f} ")
 
 def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator):
-    img_dir = os.makedirs("res_test", exist_ok=True)
+    img_dir = "res_test"  # Correctly set img_dir as the path string
+    os.makedirs(img_dir, exist_ok=True)  # Create the directory if it doesn't exist
 
     model.eval()
     running_loss = 0.0
@@ -202,13 +204,9 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
             comparison_images = torch.cat([raw_x_masked, decoded_samples], dim=1)
             
             output_file = os.path.join(img_dir, f'output_{batch_idx}_{choice_idx}.png')
-            save_image(comparison_images.reshape(-1, comparison_images.shape[-3], comparison_images.shape[-2], comparison_images.shape[-1]), output_file, nrow=30, normalize=True, value_range=(-1, 1))
-            
-            img = mpimg.imread(output_file)
-            plt.figure(figsize=(10, 8), dpi=500)
-            plt.imshow(img)
-            plt.axis('off')
-            plt.show()
+
+            save_image(comparison_images.reshape(-1, comparison_images.shape[-3], comparison_images.shape[-2], comparison_images.shape[-1]), \
+                       output_file, nrow=30, normalize=True, value_range=(-1, 1))
 
     avg_ssim = sum(ssim_scores) / len(ssim_scores)
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
@@ -224,14 +222,16 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
 def main(args=None):
     ddp_setup()
     device = int(os.environ["LOCAL_RANK"])
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = VDT_models[args.model](
         input_size=args.image_size // 8,
         num_classes=args.num_classes,
         num_frames=args.num_frames,
         mode='video'
-    ).to(device)
-    
+    )#.to(device)
+    # model, _ = load_checkpoint(model, args.ckpt)
+    model = model.to(device)
+
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     vae.eval()
     diffusion = create_diffusion(str(args.num_sampling_steps), training=True)
@@ -240,9 +240,14 @@ def main(args=None):
 
     model = DDP(model, device_ids=[device])
 
-    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transforms.ToTensor())
-    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transforms.ToTensor())
-    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transforms.ToTensor())
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform)
+    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform)
+    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform)
 
     train_sampler = DistributedSampler(train_dataset)
     val_sampler = DistributedSampler(val_dataset)
@@ -253,7 +258,6 @@ def main(args=None):
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, sampler=test_sampler)
 
     train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
-    
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
     test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
     
@@ -271,7 +275,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-sampling-steps", type=int, default=16)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num_frames", type=int, default=16)
-    parser.add_argument("--ckpt", type=str, default="model.pt", help="Optional path to a VDT checkpoint.")
+    parser.add_argument("--ckpt", type=str, default="vdt_model.pt", help="Optional path to a VDT checkpoint.")
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--epoch', type=int, default=2)
     args = parser.parse_args()
