@@ -222,7 +222,6 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
 def main(args=None):
     ddp_setup()
     device = int(os.environ["LOCAL_RANK"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = VDT_models[args.model](
         input_size=args.image_size // 8,
         num_classes=args.num_classes,
