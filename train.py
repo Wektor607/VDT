@@ -24,24 +24,26 @@ from mask_generator import VideoMaskGenerator
 from utils import load_checkpoint
 from utils import setup_logging, ddp_setup, decode_in_batches
 
-def train_vdt(model, train_dataloader, val_dataloader, 
+def train_vdt(args, model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, metrics_calculator, num_epochs=10,
               cfg_scale=1.0):
-    # model.to(device)
-
+    
     for epoch in range(num_epochs):
         running_loss = 0.0
         model.train()
+        epoch_loss = 0.0
         for batch_idx, x in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             optimizer.zero_grad()
 
             B, T, C, H, W = x.shape
-            x = x.to(device)
+            x = x.view(-1, C, H, W).to(device)
 
             with torch.no_grad():
-                latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
+                #latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
+                latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
-            latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
+            latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
+            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
@@ -60,37 +62,26 @@ def train_vdt(model, train_dataloader, val_dataloader,
             torch.cuda.empty_cache()
 
             running_loss += loss.item()
-            if batch_idx % 10 == 0:
+            epoch_loss += loss.item()
+            if batch_idx % 80 == 0:
                 logging.info(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
-                                f"Loss: {loss.item():.4f}")
+                                f"Mean Loss: {running_loss / 80:.4f}")
                 running_loss = 0.0
-            # if batch_idx % 100 == 0:
-            #     samples = results['output'].clone()
-            #     samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
-            #     samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
-            #     decoded_samples = decode_in_batches(samples, vae)
-            #     decoded_samples = decoded_samples.view(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
-            #     metrics = metrics_calculator(x.to('cpu'), decoded_samples.to('cpu'))
-            #     logging.info(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
-            #                 f"Loss: {running_loss / num_epochs:.4f}, "
-            #                 f"SSIM: {metrics['SSIM'].mean():.4f}, "
-            #                 f"PSNR: {metrics['PSNR'].mean():.4f}, "
-            #                 f"LPIPS: {metrics['LPIPS'].mean():.4f}, "
-            #                 f"FVD: {metrics['FVD']:.4f}, ")
-
-            #     running_loss = 0.0
         
-        validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator)
+        logging.info(f"Full Epoch [{epoch+1}/{num_epochs}], "f"Final Loss: {epoch_loss / len(train_dataloader):.4f}")
+        validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator)
         diffusion.training = True
         model_state = model.module.state_dict()
+        # model_state = model.state_dict()
         
-        torch.save(model_state, f'vdt_model_epoch_{epoch+1}.pt')
+        torch.save(model_state, f'vdt_model_lf_epoch_{epoch+1}.pt')
         logging.info(f"Model saved after epoch {epoch+1}")
 
-    torch.save(model.module.state_dict(), 'vdt_model.pt')
+    torch.save(model.module.state_dict(), 'vdt_model_lf.pt')
+    # torch.save(model.state_dict(), 'vdt_model_3.pt')
     print("Training finished.")
 
-def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculator):
+def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator):
     model.eval()
     running_loss = 0.0
     criterion = nn.MSELoss()
@@ -100,20 +91,27 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
     lpips_scores = []
     fvd_scores   = []
     diffusion.training = False
+    input_size=args.image_size // 8
     with torch.no_grad():
         for batch_idx, x in tqdm(enumerate(val_dataloader), total=len(val_dataloader)):
             B, T, C, H, W = x.shape
-            x = x.to(device)
+            raw_x = x.to(device)
+            x = x.view(-1, C, H, W).to(device)
             
+            # with torch.no_grad():
+            #     latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
+            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             with torch.no_grad():
-                latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
-            latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
+                latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+            
+            latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
             mask = generator(B, device, idx=choice_idx)
             
-            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
+            # z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
+            z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
             latent_x = latent_x.to(device)
 
             sample_fn = model.forward
@@ -122,15 +120,15 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
                 raw_x=latent_x, mask=mask
             )
             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
-            samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
+            samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, input_size, input_size) / 0.18215
             
             decoded_samples = decode_in_batches(samples, vae)
-            decoded_samples = decoded_samples.reshape(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
+            decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
             
-            loss = criterion(decoded_samples, x)
+            loss = criterion(decoded_samples, raw_x)
             running_loss += loss.item()
                             
-            metrics = metrics_calculator(x.to('cpu'), decoded_samples.to('cpu'))
+            metrics = metrics_calculator(raw_x.to('cpu'), decoded_samples.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
             lpips_scores.append(metrics['LPIPS'].mean())
@@ -148,10 +146,9 @@ def validate_vdt(model, val_dataloader, vae, diffusion, device, metrics_calculat
           f"Validation LPIPS: {avg_lpips:.4f}, ")
         #   f"Validation FVD: {avg_fvd:.4f} ")
 
-def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator):
-    img_dir = "res_test"  # Correctly set img_dir as the path string
-    os.makedirs(img_dir, exist_ok=True)  # Create the directory if it doesn't exist
-
+def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator):
+    img_dir = "res_test"
+    os.makedirs(img_dir, exist_ok=True)
     model.eval()
     running_loss = 0.0
     criterion = nn.MSELoss()
@@ -161,20 +158,26 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
     lpips_scores = []
     fvd_scores   = []
     diffusion.training = False
+    input_size = args.input_size // 8
     with torch.no_grad():
         for batch_idx, x in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
             B, T, C, H, W = x.shape
             raw_x = x.to(device)
-            
+            x = x.view(-1, C, H, W).to(device)
+            # with torch.no_grad():
+            #     latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
+            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             with torch.no_grad():
-                latent_x = vae.encode(raw_x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
-            latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
+                latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+            
+            latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
             mask = generator(B, device, idx=choice_idx)
             
-            z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
+            # z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
+            z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
             latent_x = latent_x.to(device)
 
             sample_fn = model.forward
@@ -183,10 +186,10 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
                 raw_x=latent_x, mask=mask
             )
             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
-            samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, latent_x.shape[-2], latent_x.shape[-1]) / 0.18215
+            samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, input_size, input_size) / 0.18215
             
             decoded_samples = decode_in_batches(samples, vae)
-            decoded_samples = decoded_samples.reshape(B, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
+            decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
             
             loss = criterion(decoded_samples, raw_x)
             running_loss += loss.item()
@@ -200,13 +203,14 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
             mask_resized = F.interpolate(mask.float(), size=(raw_x.shape[-2], raw_x.shape[-1]), mode='nearest')
             mask_resized = mask_resized.unsqueeze(0).repeat(3, 1, 1, 1, 1).permute(1, 2, 0, 3, 4)
 
+            raw_x = raw_x.reshape(-1, T, raw_x.shape[-3], raw_x.shape[-2], raw_x.shape[-1])
             raw_x_masked = raw_x * (1 - mask_resized)
             comparison_images = torch.cat([raw_x_masked, decoded_samples], dim=1)
             
             output_file = os.path.join(img_dir, f'output_{batch_idx}_{choice_idx}.png')
 
             save_image(comparison_images.reshape(-1, comparison_images.shape[-3], comparison_images.shape[-2], comparison_images.shape[-1]), \
-                       output_file, nrow=30, normalize=True, value_range=(-1, 1))
+                       output_file, nrow=T, normalize=True, value_range=(-1, 1))
 
     avg_ssim = sum(ssim_scores) / len(ssim_scores)
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
@@ -219,7 +223,8 @@ def test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
                  f"Test PSNR: {avg_psnr:.4f}, "
                  f"Test LPIPS: {avg_lpips:.4f}, "
                  f"Test FVD: {avg_fvd:.4f} ")
-def main(args=None):
+    
+def main_paral(args=None):
     ddp_setup()
     device = int(os.environ["LOCAL_RANK"])
     model = VDT_models[args.model](
@@ -227,7 +232,7 @@ def main(args=None):
         num_classes=args.num_classes,
         num_frames=args.num_frames,
         mode='video'
-    )#.to(device)
+    )
     # model, _ = load_checkpoint(model, args.ckpt)
     model = model.to(device)
 
@@ -238,7 +243,7 @@ def main(args=None):
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], device=device) #'FVD'
 
     model = DDP(model, device_ids=[device])
-
+    
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -256,11 +261,46 @@ def main(args=None):
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, sampler=val_sampler)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, sampler=test_sampler)
 
-    train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
+    train_vdt(args, model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
+    test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator)
+    
+    dist.destroy_process_group()
+
+def main_single(args=None):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = VDT_models[args.model](
+        input_size=args.image_size // 8,
+        num_classes=args.num_classes,
+        num_frames=args.num_frames,
+        mode='video'
+    )#.to(device)
+    model, _ = load_checkpoint(model, args.ckpt)
+    model = model.to(device)
+
+    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    vae.eval()
+    diffusion = create_diffusion(str(args.num_sampling_steps), training=True)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], device=device) #'FVD'
+
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform)
+    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform)
+    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+
+    # train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
     test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
     
-    dist.destroy_process_group()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -280,4 +320,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     setup_logging()
     # print("Number of process: ", torch.cuda.device_count())
-    main(args=args)
+    main_paral(args=args)
