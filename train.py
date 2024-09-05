@@ -23,11 +23,13 @@ from diffusers.models import AutoencoderKL
 from mask_generator import VideoMaskGenerator
 from utils import load_checkpoint
 from utils import setup_logging, ddp_setup, decode_in_batches
+import torch.optim.lr_scheduler as lr_scheduler
 
 def train_vdt(args, model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, metrics_calculator, num_epochs=10,
               cfg_scale=1.0):
     
+    # scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
     for epoch in range(num_epochs):
         running_loss = 0.0
         model.train()
@@ -39,11 +41,9 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             x = x.view(-1, C, H, W).to(device)
 
             with torch.no_grad():
-                #latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
                 latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
             latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
-            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
@@ -67,9 +67,13 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
                 logging.info(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
                                 f"Mean Loss: {running_loss / 80:.4f}")
                 running_loss = 0.0
-        
+                
         logging.info(f"Full Epoch [{epoch+1}/{num_epochs}], "f"Final Loss: {epoch_loss / len(train_dataloader):.4f}")
+        
         validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator)
+
+        # scheduler.step(epoch_loss / len(train_dataloader))
+        
         diffusion.training = True
         model_state = model.module.state_dict()
         # model_state = model.state_dict()
@@ -77,7 +81,7 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
         torch.save(model_state, f'vdt_model_lf_epoch_{epoch+1}.pt')
         logging.info(f"Model saved after epoch {epoch+1}")
 
-    torch.save(model.module.state_dict(), 'vdt_model_lf.pt')
+    torch.save(model.module.state_dict(), 'vdt_model_lfW.pt')
     # torch.save(model.state_dict(), 'vdt_model_3.pt')
     print("Training finished.")
 
@@ -98,9 +102,6 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
             raw_x = x.to(device)
             x = x.view(-1, C, H, W).to(device)
             
-            # with torch.no_grad():
-            #     latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
-            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
             with torch.no_grad():
                 latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
@@ -110,7 +111,6 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
             mask = generator(B, device, idx=choice_idx)
             
-            # z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
             z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
             latent_x = latent_x.to(device)
 
@@ -119,32 +119,33 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
                 sample_fn, z.shape, z, clip_denoised=False, progress=False, device=device,
                 raw_x=latent_x, mask=mask
             )
+
             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
             samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, input_size, input_size) / 0.18215
-            
+
             decoded_samples = decode_in_batches(samples, vae)
             decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
             
-            loss = criterion(decoded_samples, raw_x)
+            loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
             running_loss += loss.item()
                             
-            metrics = metrics_calculator(raw_x.to('cpu'), decoded_samples.to('cpu'))
+            metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
             lpips_scores.append(metrics['LPIPS'].mean())
-            # fvd_scores.append(metrics['FVD'])
+            fvd_scores.append(metrics['FVD'])
 
     avg_ssim = sum(ssim_scores) / len(ssim_scores)
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
     avg_lpips = sum(lpips_scores) / len(lpips_scores)
-    # avg_fvd = sum(fvd_scores) / len(fvd_scores)
+    avg_fvd = sum(fvd_scores) / len(fvd_scores)
     avg_loss = running_loss / len(val_dataloader)
     
     logging.info(f"Validation Loss: {avg_loss:.4f}, "
           f"Validation SSIM: {avg_ssim:.4f}, "
           f"Validation PSNR: {avg_psnr:.4f}, "
-          f"Validation LPIPS: {avg_lpips:.4f}, ")
-        #   f"Validation FVD: {avg_fvd:.4f} ")
+          f"Validation LPIPS: {avg_lpips:.4f}, "
+          f"Validation FVD: {avg_fvd:.4f} ")
 
 def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator):
     img_dir = "res_test"
@@ -164,9 +165,7 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             B, T, C, H, W = x.shape
             raw_x = x.to(device)
             x = x.view(-1, C, H, W).to(device)
-            # with torch.no_grad():
-            #     latent_x = vae.encode(x.view(-1, C, H, W)).latent_dist.sample().mul_(0.18215)
-            # latent_x = latent_x.view(B, T, -1, latent_x.shape[-2], latent_x.shape[-1])
+            
             with torch.no_grad():
                 latent_x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
@@ -176,7 +175,6 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
             mask = generator(B, device, idx=choice_idx)
             
-            # z = torch.randn(B, T, 4, latent_x.shape[-2], latent_x.shape[-1], device=device).permute(0, 2, 1, 3, 4)
             z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
             latent_x = latent_x.to(device)
 
@@ -185,16 +183,17 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
                 sample_fn, z.shape, z, clip_denoised=False, progress=False, device=device,
                 raw_x=latent_x, mask=mask
             )
+
             samples = samples.permute(1, 0, 2, 3, 4) * mask + latent_x.permute(2, 0, 1, 3, 4) * (1-mask)
             samples = samples.permute(1, 2, 0, 3, 4).reshape(-1, 4, input_size, input_size) / 0.18215
             
             decoded_samples = decode_in_batches(samples, vae)
             decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
-            
-            loss = criterion(decoded_samples, raw_x)
+
+            loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
             running_loss += loss.item()
                             
-            metrics = metrics_calculator(raw_x.to('cpu'), decoded_samples.to('cpu'))
+            metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
             lpips_scores.append(metrics['LPIPS'].mean())
@@ -205,8 +204,9 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
 
             raw_x = raw_x.reshape(-1, T, raw_x.shape[-3], raw_x.shape[-2], raw_x.shape[-1])
             raw_x_masked = raw_x * (1 - mask_resized)
+
             comparison_images = torch.cat([raw_x_masked, decoded_samples], dim=1)
-            
+
             output_file = os.path.join(img_dir, f'output_{batch_idx}_{choice_idx}.png')
 
             save_image(comparison_images.reshape(-1, comparison_images.shape[-3], comparison_images.shape[-2], comparison_images.shape[-1]), \
@@ -239,8 +239,8 @@ def main_paral(args=None):
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     vae.eval()
     diffusion = create_diffusion(str(args.num_sampling_steps), training=True)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], device=device) #'FVD'
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
 
     model = DDP(model, device_ids=[device])
     
@@ -262,7 +262,6 @@ def main_paral(args=None):
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, sampler=test_sampler)
 
     train_vdt(args, model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
-    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
     test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator)
     
     dist.destroy_process_group()
@@ -275,14 +274,14 @@ def main_single(args=None):
         num_frames=args.num_frames,
         mode='video'
     )#.to(device)
-    model, _ = load_checkpoint(model, args.ckpt)
+    # model, _ = load_checkpoint(model, args.ckpt)
     model = model.to(device)
 
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     vae.eval()
     diffusion = create_diffusion(str(args.num_sampling_steps), training=True)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS'], device=device) #'FVD'
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
 
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -297,9 +296,9 @@ def main_single(args=None):
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
-    # train_vdt(model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
+    train_vdt(args, model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
-    test_vdt(model, test_dataloader, vae, diffusion, device, metrics_calculator)
+    test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator)
     
 
 if __name__ == "__main__":

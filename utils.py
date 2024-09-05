@@ -313,8 +313,6 @@ def load_checkpoint(model, model_name):
 
         if key in state_dict.keys():
             if state_dict[key].shape!=model.state_dict()[key].shape:
-                print('state_dict[key].shape', key, state_dict[key].shape)
-                print('model.state_dict()[key].shape', key, model.state_dict()[key].shape)
                 del state_dict[key]
     
     msg = model.load_state_dict(state_dict,strict=False)
