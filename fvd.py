@@ -286,7 +286,6 @@ def frechet_distance(feats_fake: np.ndarray, feats_real: np.ndarray) -> float:
     m = np.square(mu_gen - mu_real).sum()
     if isinstance(sigma_gen, np.ndarray) and isinstance(sigma_real, np.ndarray):
         if sigma_gen.ndim == 2 and sigma_real.ndim == 2:
-            # Ваш код
             s, _ = sqrtm(np.dot(sigma_gen, sigma_real), disp=False) # pylint: disable=no-member
             fid = np.real(m + np.trace(sigma_gen + sigma_real - s * 2))
             return float(fid)

@@ -157,7 +157,6 @@ class MetricCalculator(nn.Module):
         gt/pred: (N, T, C, H, W) - ground truth and predicted videos.
         """
         # Extract features using I3D model
-        # print(gt.shape)
         _, T, _, _, _ = gt.shape
         gt = gt.permute(0, 2, 1, 3, 4)
         gt_feats = get_fvd_feats(gt, self.i3d_model, device=self.device, bs=T)

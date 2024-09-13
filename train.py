@@ -3,13 +3,12 @@ import torch
 import random
 import argparse
 import logging
+import numpy as np
 import torch.nn as nn
 from tqdm import tqdm
 import torch.optim as optim
 import torch.nn.functional as F
-import matplotlib.pyplot as plt
 import torch.distributed as dist
-import matplotlib.image as mpimg
 from torchvision import transforms
 from torchvision.utils import save_image
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -21,15 +20,16 @@ from diffusion import create_diffusion
 from metrics import MetricCalculator
 from diffusers.models import AutoencoderKL
 from mask_generator import VideoMaskGenerator
-from utils import load_checkpoint
-from utils import setup_logging, ddp_setup, decode_in_batches
+from utils import setup_logging, ddp_setup, decode_in_batches, load_checkpoint, add_border
 import torch.optim.lr_scheduler as lr_scheduler
 
 def train_vdt(args, model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, metrics_calculator, num_epochs=10,
               cfg_scale=1.0):
-    
-    # scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
+    final_epoch = 164
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    train_losses = []
+    val_losses = []
     for epoch in range(num_epochs):
         running_loss = 0.0
         model.train()
@@ -61,33 +61,43 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             optimizer.step()
             torch.cuda.empty_cache()
 
-            running_loss += loss.item()
             epoch_loss += loss.item()
-            if batch_idx % 80 == 0:
-                logging.info(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
-                                f"Mean Loss: {running_loss / 80:.4f}")
-                running_loss = 0.0
-                
-        logging.info(f"Full Epoch [{epoch+1}/{num_epochs}], "f"Final Loss: {epoch_loss / len(train_dataloader):.4f}")
+            
+            # running_loss += loss.item()
+            # if batch_idx != 0 and batch_idx % (len(train_dataloader) // args.batch_size) == 0:
+            #     logging.info(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_dataloader)}], "
+            #                     f"Mean Loss: {running_loss / (len(train_dataloader) // args.batch_size):.4f}")
+            #     running_loss = 0.0
+        train_losses.append(epoch_loss / len(train_dataloader))    
+        logging.info(f"Full Epoch [{final_epoch + epoch+1}/{final_epoch + num_epochs}], "f"Final Loss: {epoch_loss / len(train_dataloader):.4f}")
         
-        validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator)
+        if epoch % 3 == 0 and epoch != 0:
+            val_loss = validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator)
+            val_losses.append(val_loss)
+            np.save(f'val_losses_{args.num_sampling_steps}.npy', np.array(val_losses))
+            scheduler.step(val_loss)
+        
+        np.save(f'train_losses_{args.num_sampling_steps}.npy', np.array(train_losses))
 
-        # scheduler.step(epoch_loss / len(train_dataloader))
         
         diffusion.training = True
-        model_state = model.module.state_dict()
-        # model_state = model.state_dict()
+        if args.mode == 'paral':
+            model_state = model.module.state_dict()
+        elif args.mode == 'single':
+            model_state = model.state_dict()
         
-        torch.save(model_state, f'vdt_model_lf_epoch_{epoch+1}.pt')
-        logging.info(f"Model saved after epoch {epoch+1}")
+        torch.save(model_state, f'vdt_model_{args.num_sampling_steps}_{final_epoch + epoch+1}.pt')
+        logging.info(f"Model saved after epoch {final_epoch + epoch+1}")
 
-    torch.save(model.module.state_dict(), 'vdt_model_lfW.pt')
-    # torch.save(model.state_dict(), 'vdt_model_3.pt')
+    if args.mode == 'paral':
+        torch.save(model.module.state_dict(), f'vdt_model_big_{args.num_sampling_steps}.pt')
+    elif args.mode == 'single':
+        torch.save(model.state_dict(), 'vdt_model_3.pt')
     print("Training finished.")
 
 def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator):
     model.eval()
-    running_loss = 0.0
+    running_loss, full_loss = 0.0, 0.0
     criterion = nn.MSELoss()
 
     ssim_scores  = []
@@ -127,7 +137,12 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
             decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
             
             loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
-            running_loss += loss.item()
+            full_loss += loss.item()
+            # running_loss += loss.item()
+            # if batch_idx != 0 and batch_idx % (len(val_dataloader) // args.batch_size) == 0:
+            #     logging.info(f"Validation Batch [{batch_idx+1}/{len(val_dataloader)}], "
+            #                     f"Mean Loss: {running_loss / (len(val_dataloader) // args.batch_size):.4f}")
+            #     running_loss = 0.0
                             
             metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
@@ -139,19 +154,26 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
     avg_lpips = sum(lpips_scores) / len(lpips_scores)
     avg_fvd = sum(fvd_scores) / len(fvd_scores)
-    avg_loss = running_loss / len(val_dataloader)
+    avg_loss = full_loss / len(val_dataloader)
+    
+    np.save(f'val_ssim_{args.num_sampling_steps}.npy', np.array(ssim_scores))
+    np.save(f'val_psnr_{args.num_sampling_steps}.npy', np.array(psnr_scores))
+    np.save(f'val_lpips_{args.num_sampling_steps}.npy', np.array(lpips_scores))
+    np.save(f'val_fvd_{args.num_sampling_steps}.npy', np.array(fvd_scores))
     
     logging.info(f"Validation Loss: {avg_loss:.4f}, "
           f"Validation SSIM: {avg_ssim:.4f}, "
           f"Validation PSNR: {avg_psnr:.4f}, "
           f"Validation LPIPS: {avg_lpips:.4f}, "
           f"Validation FVD: {avg_fvd:.4f} ")
+    
+    return avg_loss
 
 def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator):
     img_dir = "res_test"
     os.makedirs(img_dir, exist_ok=True)
     model.eval()
-    running_loss = 0.0
+    running_loss, full_loss = 0.0, 0.0
     criterion = nn.MSELoss()
 
     ssim_scores  = []
@@ -159,7 +181,7 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
     lpips_scores = []
     fvd_scores   = []
     diffusion.training = False
-    input_size = args.input_size // 8
+    input_size = args.image_size // 8
     with torch.no_grad():
         for batch_idx, x in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
             B, T, C, H, W = x.shape
@@ -191,13 +213,22 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
 
             loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
-            running_loss += loss.item()
+            full_loss += loss.item()
+            # running_loss += loss.item()
+            # if batch_idx != 0 and batch_idx % (len(test_dataloader) // args.batch_size) == 0:
+            #     logging.info(f"Test Batch [{batch_idx+1}/{len(test_dataloader)}], "
+            #                     f"Mean Loss: {running_loss / (len(test_dataloader) // args.batch_size):.4f}")
+            #     running_loss = 0.0
                             
             metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
             lpips_scores.append(metrics['LPIPS'].mean())
             fvd_scores.append(metrics['FVD'])
+
+            # if choice_idx == 0:
+            #     decoded_samples[0] = add_border(decoded_samples[0], color='orange')
+            #     decoded_samples[1] = add_border(decoded_samples[1], color='orange')
 
             mask_resized = F.interpolate(mask.float(), size=(raw_x.shape[-2], raw_x.shape[-1]), mode='nearest')
             mask_resized = mask_resized.unsqueeze(0).repeat(3, 1, 1, 1, 1).permute(1, 2, 0, 3, 4)
@@ -216,7 +247,7 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
     avg_psnr = sum(psnr_scores) / len(psnr_scores)
     avg_lpips = sum(lpips_scores) / len(lpips_scores)
     avg_fvd = sum(fvd_scores) / len(fvd_scores)
-    avg_loss = running_loss / len(test_dataloader)
+    avg_loss = full_loss / len(test_dataloader)
     
     logging.info(f"Test Loss: {avg_loss:.4f}, "
                  f"Test SSIM: {avg_ssim:.4f}, "
@@ -233,25 +264,26 @@ def main_paral(args=None):
         num_frames=args.num_frames,
         mode='video'
     )
-    # model, _ = load_checkpoint(model, args.ckpt)
-    model = model.to(device)
 
+    model, _ = load_checkpoint(model, args.ckpt)
+    model = model.to(device)
+    model = DDP(model, device_ids=[device])
+    
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     vae.eval()
     diffusion = create_diffusion(str(args.num_sampling_steps), training=True)
+
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     metrics_calculator = MetricCalculator(['SSIM', 'PSNR', 'LPIPS', 'FVD'], device=device)
-
-    model = DDP(model, device_ids=[device])
     
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     
-    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform)
-    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform)
-    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform)
+    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform, frames_per_clip=args.num_frames)
+    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform, frames_per_clip=args.num_frames)
+    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform, frames_per_clip=args.num_frames)
 
     train_sampler = DistributedSampler(train_dataset)
     val_sampler = DistributedSampler(val_dataset)
@@ -261,7 +293,9 @@ def main_paral(args=None):
     val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, sampler=val_sampler)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, sampler=test_sampler)
 
-    train_vdt(args, model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)
+    if args.run_mode == 'train':
+        train_vdt(args, model, train_dataloader, val_dataloader, vae, diffusion, optimizer, device, metrics_calculator, num_epochs=args.epoch, cfg_scale=1.0)#, writer=writer)
+    
     test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator)
     
     dist.destroy_process_group()
@@ -273,7 +307,7 @@ def main_single(args=None):
         num_classes=args.num_classes,
         num_frames=args.num_frames,
         mode='video'
-    )#.to(device)
+    )
     # model, _ = load_checkpoint(model, args.ckpt)
     model = model.to(device)
 
@@ -316,7 +350,15 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt", type=str, default="vdt_model.pt", help="Optional path to a VDT checkpoint.")
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--epoch', type=int, default=2)
+    parser.add_argument('--mode', type=str, default='single')
+    parser.add_argument('--run_mode', type=str, default='train')
     args = parser.parse_args()
+    
     setup_logging()
-    # print("Number of process: ", torch.cuda.device_count())
-    main_paral(args=args)
+    
+    if args.mode == 'paral':
+        main_paral(args=args)
+    elif args.mode == 'single':
+        main_single(args=args)
+    else:
+        raise('There is no such mode!')

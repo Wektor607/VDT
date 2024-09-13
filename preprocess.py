@@ -1,5 +1,6 @@
 # All videos have 30 frames length in CityScapes
 import os
+import numpy as np
 from PIL import Image
 from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
@@ -22,15 +23,19 @@ class FrameDataset(Dataset):
     
     def __len__(self):
         # Return the number of video clips
-        return len(self.video_clips) // self.frames_per_clip
+        return len(self.video_clips) // 30#self.frames_per_clip
 
     def __getitem__(self, idx):
         # Determine the start and end index for the given video clip
-        start_idx = idx * self.frames_per_clip
-        end_idx = start_idx + self.frames_per_clip
+        start_idx = idx * 30 #self.frames_per_clip
+        end_idx = start_idx + 30 #self.frames_per_clip
         
         # Extract paths to 30 images for the given video clip
         clip_paths = self.video_clips[start_idx:end_idx]
+        
+        idx = np.random.randint(len(clip_paths) - self.frames_per_clip + 1)
+        clip_paths = clip_paths[idx:idx + self.frames_per_clip]
+        
         images = []
 
         for img_path in clip_paths:
@@ -48,15 +53,15 @@ if __name__ == "__main__":
     transforms.ToTensor(),
     ])
 
-    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform)
+    train_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/train', transform=transform,frames_per_clip=16)
 
     # for idx, frames in enumerate(train_dataset):
     #     print(f"Video sequence {idx+1}:")
     #     print(f"Frame shape (C, H, W): {frames.shape}")
     #     print(f"Tensor shape: {frames.shape}")
 
-    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform)
-    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform)
+    val_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/val', transform=transform,frames_per_clip=16)
+    test_dataset = FrameDataset(root_dir='leftImg8bit_sequence_preprocess/test', transform=transform,frames_per_clip=16)
 
     train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4)
     val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=4)

@@ -82,7 +82,7 @@ class VideoMaskGenerator:
         self.spatial_generator = MaskingGenerator((self.height, self.width), spatial_mask_ratio * self.height * self.width)
         
         # idx = 0 Predict
-        self.predict_given_frame_length = 2 # 2 cond + 28 pred
+        self.predict_given_frame_length = 8 #2 # 2 cond + 28 pred
 
         # idx = 1 Backward
         self.backward_given_frame_length = 8
