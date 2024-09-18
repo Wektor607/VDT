@@ -230,7 +230,8 @@ class VDT(nn.Module):
         num_classes=1000,
         learn_sigma=True,
         mode='video',
-        num_frames=16
+        num_frames=16,
+        cfg_scale=4.0
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -238,6 +239,7 @@ class VDT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+        self.cfg_scale = cfg_scale
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -349,21 +351,23 @@ class VDT(nn.Module):
         x = x.view(B, T, x.shape[-3], x.shape[-2], x.shape[-1])
         return x
 
-    def forward_with_cfg(self, x, t, y, cfg_scale):
+    # def forward_with_cfg(self, x, t, y, cfg_scale):
+    def forward_with_cfg(self, x, t):
         """
         Forward pass of VDT, but also batches the unconditional forward pass for classifier-free guidance.
         """
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t, y)
+        # model_out = self.forward(combined, t, y)
+        model_out = self.forward(combined, t)
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.
         # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+        half_eps = uncond_eps + self.cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 

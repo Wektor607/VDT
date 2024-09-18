@@ -23,10 +23,19 @@ from mask_generator import VideoMaskGenerator
 from utils import setup_logging, ddp_setup, decode_in_batches, load_checkpoint, add_border
 import torch.optim.lr_scheduler as lr_scheduler
 
+def append_to_npy(file_path, new_data):
+    if os.path.exists(file_path):
+        existing_data = np.load(file_path)
+        updated_data = np.concatenate((existing_data, new_data))
+    else:
+        updated_data = new_data
+
+    np.save(file_path, updated_data)
+
 def train_vdt(args, model, train_dataloader, val_dataloader, 
               vae, diffusion, optimizer, device, metrics_calculator, num_epochs=10,
               cfg_scale=1.0):
-    final_epoch = 164
+    final_epoch = 345
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     train_losses = []
     val_losses = []
@@ -71,13 +80,20 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
         train_losses.append(epoch_loss / len(train_dataloader))    
         logging.info(f"Full Epoch [{final_epoch + epoch+1}/{final_epoch + num_epochs}], "f"Final Loss: {epoch_loss / len(train_dataloader):.4f}")
         
-        if epoch % 3 == 0 and epoch != 0:
+        if epoch % 5 == 0 and epoch != 0:
+            torch.save(model_state, f'vdt_model_{args.num_sampling_steps}_{final_epoch + epoch+1}.pt')
+            logging.info(f"Model saved after epoch {final_epoch + epoch+1}")
+
             val_loss = validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_calculator)
             val_losses.append(val_loss)
-            np.save(f'val_losses_{args.num_sampling_steps}.npy', np.array(val_losses))
+
+            # Append validation losses to the existing .npy file
+            append_to_npy(f'val_losses_{args.num_sampling_steps}.npy', np.array(val_losses))
+
             scheduler.step(val_loss)
-        
-        np.save(f'train_losses_{args.num_sampling_steps}.npy', np.array(train_losses))
+
+        # Append training losses to the existing .npy file
+        append_to_npy(f'train_losses_{args.num_sampling_steps}.npy', np.array(train_losses))
 
         
         diffusion.training = True
@@ -85,9 +101,6 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             model_state = model.module.state_dict()
         elif args.mode == 'single':
             model_state = model.state_dict()
-        
-        torch.save(model_state, f'vdt_model_{args.num_sampling_steps}_{final_epoch + epoch+1}.pt')
-        logging.info(f"Model saved after epoch {final_epoch + epoch+1}")
 
     if args.mode == 'paral':
         torch.save(model.module.state_dict(), f'vdt_model_big_{args.num_sampling_steps}.pt')
@@ -156,10 +169,10 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     avg_fvd = sum(fvd_scores) / len(fvd_scores)
     avg_loss = full_loss / len(val_dataloader)
     
-    np.save(f'val_ssim_{args.num_sampling_steps}.npy', np.array(ssim_scores))
-    np.save(f'val_psnr_{args.num_sampling_steps}.npy', np.array(psnr_scores))
-    np.save(f'val_lpips_{args.num_sampling_steps}.npy', np.array(lpips_scores))
-    np.save(f'val_fvd_{args.num_sampling_steps}.npy', np.array(fvd_scores))
+    append_to_npy(f'val_ssim_{args.num_sampling_steps}.npy', np.array(ssim_scores))
+    append_to_npy(f'val_psnr_{args.num_sampling_steps}.npy', np.array(psnr_scores))
+    append_to_npy(f'val_lpips_{args.num_sampling_steps}.npy', np.array(lpips_scores))
+    append_to_npy(f'val_fvd_{args.num_sampling_steps}.npy', np.array(fvd_scores))
     
     logging.info(f"Validation Loss: {avg_loss:.4f}, "
           f"Validation SSIM: {avg_ssim:.4f}, "
@@ -170,7 +183,7 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     return avg_loss
 
 def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator):
-    img_dir = "res_test"
+    img_dir = f"res_test_{args.ckpt}_8_8"
     os.makedirs(img_dir, exist_ok=True)
     model.eval()
     running_loss, full_loss = 0.0, 0.0
@@ -200,7 +213,8 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
             latent_x = latent_x.to(device)
 
-            sample_fn = model.forward
+            # Write about it in the paper
+            sample_fn = model.forward_with_cfg
             samples = diffusion.p_sample_loop(
                 sample_fn, z.shape, z, clip_denoised=False, progress=False, device=device,
                 raw_x=latent_x, mask=mask
@@ -219,13 +233,18 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             #     logging.info(f"Test Batch [{batch_idx+1}/{len(test_dataloader)}], "
             #                     f"Mean Loss: {running_loss / (len(test_dataloader) // args.batch_size):.4f}")
             #     running_loss = 0.0
-                            
+            print(decoded_samples.shape, raw_x.shape)           
             metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
             lpips_scores.append(metrics['LPIPS'].mean())
             fvd_scores.append(metrics['FVD'])
 
+            logging.info(f"Test Loss: {loss}, "
+                f"Test SSIM: {metrics['SSIM'].mean()}, "
+                f"Test PSNR: {metrics['PSNR'].mean()}, "
+                f"Test LPIPS: {metrics['LPIPS'].mean()}, "
+                f"Test FVD: {metrics['FVD']} ")
             # if choice_idx == 0:
             #     decoded_samples[0] = add_border(decoded_samples[0], color='orange')
             #     decoded_samples[1] = add_border(decoded_samples[1], color='orange')
@@ -262,7 +281,8 @@ def main_paral(args=None):
         input_size=args.image_size // 8,
         num_classes=args.num_classes,
         num_frames=args.num_frames,
-        mode='video'
+        mode='video',
+        cfg_scale=args.cfg_scale,
     )
 
     model, _ = load_checkpoint(model, args.ckpt)
@@ -306,7 +326,8 @@ def main_single(args=None):
         input_size=args.image_size // 8,
         num_classes=args.num_classes,
         num_frames=args.num_frames,
-        mode='video'
+        mode='video',
+        cfg_scale=args.cfg_scale,
     )
     # model, _ = load_checkpoint(model, args.ckpt)
     model = model.to(device)
