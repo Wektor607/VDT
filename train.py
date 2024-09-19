@@ -88,12 +88,12 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             val_losses.append(val_loss)
 
             # Append validation losses to the existing .npy file
-            append_to_npy(f'val_losses_{args.num_sampling_steps}.npy', np.array(val_losses))
+            # append_to_npy(f'val_losses_{args.num_sampling_steps}.npy', np.array(val_losses))
 
             scheduler.step(val_loss)
 
         # Append training losses to the existing .npy file
-        append_to_npy(f'train_losses_{args.num_sampling_steps}.npy', np.array(train_losses))
+        # append_to_npy(f'train_losses_{args.num_sampling_steps}.npy', np.array(train_losses))
 
         
         diffusion.training = True
@@ -169,10 +169,10 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     avg_fvd = sum(fvd_scores) / len(fvd_scores)
     avg_loss = full_loss / len(val_dataloader)
     
-    append_to_npy(f'val_ssim_{args.num_sampling_steps}.npy', np.array(ssim_scores))
-    append_to_npy(f'val_psnr_{args.num_sampling_steps}.npy', np.array(psnr_scores))
-    append_to_npy(f'val_lpips_{args.num_sampling_steps}.npy', np.array(lpips_scores))
-    append_to_npy(f'val_fvd_{args.num_sampling_steps}.npy', np.array(fvd_scores))
+    # append_to_npy(f'val_ssim_{args.num_sampling_steps}.npy', np.array(ssim_scores))
+    # append_to_npy(f'val_psnr_{args.num_sampling_steps}.npy', np.array(psnr_scores))
+    # append_to_npy(f'val_lpips_{args.num_sampling_steps}.npy', np.array(lpips_scores))
+    # append_to_npy(f'val_fvd_{args.num_sampling_steps}.npy', np.array(fvd_scores))
     
     logging.info(f"Validation Loss: {avg_loss:.4f}, "
           f"Validation SSIM: {avg_ssim:.4f}, "
@@ -198,6 +198,9 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
     with torch.no_grad():
         for batch_idx, x in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
             B, T, C, H, W = x.shape
+            if B < args.batch_size:
+                continue
+
             raw_x = x.to(device)
             x = x.view(-1, C, H, W).to(device)
             
@@ -207,7 +210,7 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
-            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
+            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]), num_frames=T)
             mask = generator(B, device, idx=choice_idx)
             
             z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
@@ -226,14 +229,14 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             decoded_samples = decode_in_batches(samples, vae)
             decoded_samples = decoded_samples.reshape(-1, T, decoded_samples.shape[-3], decoded_samples.shape[-2], decoded_samples.shape[-1])
 
-            loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
-            full_loss += loss.item()
             # running_loss += loss.item()
             # if batch_idx != 0 and batch_idx % (len(test_dataloader) // args.batch_size) == 0:
             #     logging.info(f"Test Batch [{batch_idx+1}/{len(test_dataloader)}], "
             #                     f"Mean Loss: {running_loss / (len(test_dataloader) // args.batch_size):.4f}")
             #     running_loss = 0.0
             print(decoded_samples.shape, raw_x.shape)           
+            loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
+            full_loss += loss.item()
             metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
             ssim_scores.append(metrics['SSIM'].mean())
             psnr_scores.append(metrics['PSNR'].mean())
@@ -245,9 +248,6 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
                 f"Test PSNR: {metrics['PSNR'].mean()}, "
                 f"Test LPIPS: {metrics['LPIPS'].mean()}, "
                 f"Test FVD: {metrics['FVD']} ")
-            # if choice_idx == 0:
-            #     decoded_samples[0] = add_border(decoded_samples[0], color='orange')
-            #     decoded_samples[1] = add_border(decoded_samples[1], color='orange')
 
             mask_resized = F.interpolate(mask.float(), size=(raw_x.shape[-2], raw_x.shape[-1]), mode='nearest')
             mask_resized = mask_resized.unsqueeze(0).repeat(3, 1, 1, 1, 1).permute(1, 2, 0, 3, 4)

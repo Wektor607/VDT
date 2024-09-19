@@ -33,8 +33,9 @@ class FrameDataset(Dataset):
         # Extract paths to 30 images for the given video clip
         clip_paths = self.video_clips[start_idx:end_idx]
         
-        idx = np.random.randint(len(clip_paths) - self.frames_per_clip + 1)
-        clip_paths = clip_paths[idx:idx + self.frames_per_clip]
+        if self.frames_per_clip == 16:
+            idx = np.random.randint(len(clip_paths) - self.frames_per_clip + 1)
+            clip_paths = clip_paths[idx:idx + self.frames_per_clip]
         
         images = []
 

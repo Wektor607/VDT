@@ -76,13 +76,16 @@ class MaskingGenerator:
         return mask
 
 class VideoMaskGenerator:
-    def __init__(self, input_size, spatial_mask_ratio=0.5):
+    def __init__(self, input_size, spatial_mask_ratio=0.5, num_frames=30):
         self.length, self.height, self.width = input_size
 
         self.spatial_generator = MaskingGenerator((self.height, self.width), spatial_mask_ratio * self.height * self.width)
         
         # idx = 0 Predict
-        self.predict_given_frame_length = 8 #2 # 2 cond + 28 pred
+        if num_frames == 16:
+            self.predict_given_frame_length = 8 # training: 8 cond + 8 pred
+        elif num_frames == 30:
+            self.predict_given_frame_length = 2 # inference: 2 cond + 28 pred
 
         # idx = 1 Backward
         self.backward_given_frame_length = 8
