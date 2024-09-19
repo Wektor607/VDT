@@ -47,6 +47,8 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             optimizer.zero_grad()
 
             B, T, C, H, W = x.shape
+            if B < args.batch_size:
+                continue
             x = x.view(-1, C, H, W).to(device)
 
             with torch.no_grad():
@@ -55,7 +57,7 @@ def train_vdt(args, model, train_dataloader, val_dataloader,
             latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
-            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
+            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]), num_frames=T)
             mask = generator(B, device, idx=choice_idx)
             
             t = torch.randint(0, diffusion.num_timesteps, (B,), device=device).long()
@@ -122,6 +124,8 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     with torch.no_grad():
         for batch_idx, x in tqdm(enumerate(val_dataloader), total=len(val_dataloader)):
             B, T, C, H, W = x.shape
+            if B < args.batch_size:
+                continue
             raw_x = x.to(device)
             x = x.view(-1, C, H, W).to(device)
             
@@ -131,7 +135,7 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
             latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
             choice_idx = random.choice([0, 3])
-            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]))
+            generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]), num_frames=T)
             mask = generator(B, device, idx=choice_idx)
             
             z = torch.randn(B, T, 4, input_size, input_size, device=device).permute(0, 2, 1, 3, 4)
