@@ -82,10 +82,10 @@ class VideoMaskGenerator:
         self.spatial_generator = MaskingGenerator((self.height, self.width), spatial_mask_ratio * self.height * self.width)
         
         # idx = 0 Predict
-        if num_frames == 16:
-            self.predict_given_frame_length = 8 # training: 8 cond + 8 pred
-        elif num_frames == 30:
+        if num_frames == 30:
             self.predict_given_frame_length = 2 # inference: 2 cond + 28 pred
+        else:
+            self.predict_given_frame_length = 8 # training: 8 cond + 8 pred
 
         # idx = 1 Backward
         self.backward_given_frame_length = 8
@@ -107,12 +107,11 @@ class VideoMaskGenerator:
     def spatial_mask(self):
         mask = np.zeros(shape=self.get_shape(), dtype=int)
 
-
         start_idx = random.randint(0, 3)
         end_idx = random.randint(0, 3)
 
         spatial_mask = self.spatial_generator()
-        # print("start_idx, end_idx", start_idx, end_idx)
+        
         mask[start_idx:-end_idx] = spatial_mask
         return mask
 

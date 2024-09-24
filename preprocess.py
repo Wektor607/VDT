@@ -27,8 +27,8 @@ class FrameDataset(Dataset):
 
     def __getitem__(self, idx):
         # Determine the start and end index for the given video clip
-        start_idx = idx * 30 #self.frames_per_clip #30
-        end_idx = start_idx + 30 #self.frames_per_clip #30
+        start_idx = idx * 30 #self.frames_per_clip
+        end_idx = start_idx + 30 #self.frames_per_clip
         
         # Extract paths to 30 images for the given video clip
         clip_paths = self.video_clips[start_idx:end_idx]

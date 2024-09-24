@@ -351,7 +351,6 @@ class VDT(nn.Module):
         x = x.view(B, T, x.shape[-3], x.shape[-2], x.shape[-1])
         return x
 
-    # def forward_with_cfg(self, x, t, y, cfg_scale):
     def forward_with_cfg(self, x, t):
         """
         Forward pass of VDT, but also batches the unconditional forward pass for classifier-free guidance.
@@ -359,7 +358,6 @@ class VDT(nn.Module):
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        # model_out = self.forward(combined, t, y)
         model_out = self.forward(combined, t)
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.

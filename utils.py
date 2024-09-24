@@ -344,25 +344,3 @@ def decode_in_batches(samples, vae, chunk_size=256):
         torch.cuda.empty_cache()
 
     return torch.cat(decoded_chunks, dim=0)
-
-def add_border(image_tensor, color='orange', width=5):
-    """
-    Add a border to an image.
-    
-    Args:
-    - image_tensor: a tensor image to be outlined with a border
-    - color: the color of the border
-    - width: the thickness of the border
-    
-    Returns:
-    - image_tensor: the image with the added border
-    """
-    image = Image.fromarray(image_tensor.mul(255).byte().cpu().numpy().transpose(1, 2, 0))
-    
-    # Draw the border
-    draw = ImageDraw.Draw(image)
-    draw.rectangle([0, 0, image.size[0], image.size[1]], outline=color, width=width)
-    
-    # Convert the PIL image back to tensor
-    image_tensor = torch.from_numpy(np.array(image).transpose(2, 0, 1)).float() / 255
-    return image_tensor

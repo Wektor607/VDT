@@ -64,7 +64,7 @@ class MetricCalculator(nn.Module):
         return:
             m: (N*T) or (N, T)
         """
-        #To do
+        
         N, num_sample, T, _, _, _ = pred.shape
         pred_shift = torch.roll(pred, 1, 1).flatten(0, 1) #(N*num_sample, T, C, H, W)
         m = self.cal_lpips(pred_shift, pred.flatten(0, 1)) #(N*num_sample*T)
@@ -79,7 +79,6 @@ class MetricCalculator(nn.Module):
         return:
             m: (N*T) or (N, T)
         """
-        N, T, C, _, _ = gt.shape
         if not self.scipy_ssim:
             m = self.ssim_func(gt.flatten(0, 1), pred.flatten(0, 1), mean_flag = False)
         else:
@@ -87,15 +86,14 @@ class MetricCalculator(nn.Module):
         return m
     
     def cal_psnr(self, gt, pred):
-        N, T, _, _, _ = gt.shape
         m = self.psnr(gt.flatten(0, 1), pred.flatten(0, 1), mean_flag = False)
 
         return m
     
     def cal_lpips(self, gt, pred):
-        N, T, C, _, _ = gt.shape
-        #gt = self.lpips_transform(gt)
-        #pred = self.lpips_transform(pred)
+        _, _, C, _, _ = gt.shape
+        gt = self.lpips_transform(gt)
+        pred = self.lpips_transform(pred)
         
         if C == 1:
             pred = pred.repeat(1, 1, 3, 1, 1)
@@ -116,7 +114,7 @@ class MetricCalculator(nn.Module):
         transform = Transforms.Compose([Transforms.Resize((128, 128)),
                                         Transforms.ToTensor(),
                                         Transforms.Normalize(mean=(0.5, 0.5, 0.5),std=(0.5, 0.5, 0.5))])
-        N, T, _, H, W = x.shape
+        N, T, _, _, _ = x.shape
         out = torch.zeros(N, T, 3, 128, 128, device = x.device)
         for ii in range(N):
             for jj in range(T):
