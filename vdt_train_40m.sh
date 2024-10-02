@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --partition=A40devel
-#SBATCH --time=1:00:00
+#SBATCH --partition=A40short
+#SBATCH --time=8:00:00
 #SBATCH --gpus=4
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
@@ -27,6 +27,6 @@ module purge
 
 export OMP_NUM_THREADS=4
 
-torchrun --master_port=13215 --nproc_per_node=4 main.py --model VDT-L/2 --vae mse --image-size 128 \
+torchrun --master_port=21315 --nproc_per_node=4 main.py --model VDT-L/2 --vae mse --image-size 128 \
         --f None --num-classes 1 --batch_size 6 --cfg-scale 4 --num-sampling-steps 500 --seed 0 \
-        --num_frames 16 --epoch 100 --ckpt vdt_model_500_605.pt --mode paral --run_mode train
+        --num_frames 16 --epoch 100 --ckpt vdt_model_500_1061.pt --mode paral --run_mode train

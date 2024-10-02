@@ -134,7 +134,7 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             #     logging.info(f"Test Batch [{batch_idx+1}/{len(test_dataloader)}], "
             #                     f"Mean Loss: {running_loss / (len(test_dataloader) // args.batch_size):.4f}")
             #     running_loss = 0.0
-            print(decoded_samples.shape, raw_x.shape)           
+                    
             loss = criterion(decoded_samples.to('cpu'), raw_x.to('cpu'))
             full_loss += loss.item()
             metrics = metrics_calculator(decoded_samples.to('cpu'), raw_x.to('cpu'))
