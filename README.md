@@ -1,52 +1,38 @@
 # VDT
-[ICLR2024] The official implementation of paper "VDT: General-purpose Video Diffusion Transformers via Mask Modeling", by Haoyu Lu, Guoxing Yang, Nanyi Fei, Yuqi Huo, Zhiwu Lu, Ping Luo, Mingyu Ding.
+Laboratory work on the article “VDT: universal video diffusion transformers using mask modeling”, authors Mikhelson German, Enrico Pallota, Prof. Dr. Jurgen Gall
 
 <img src="VDT.png" width="700">
 
 ## Introduction
-This work introduces Video Diffusion Transformer (VDT), which pioneers the use of transformers in diffusion-based video generation.
-It features transformer blocks with modularized temporal and spatial attention modules, allowing separate optimization of each component and leveraging the rich spatial-temporal representation inherited from transformers.
-
-1) It excels at capturing temporal dependencies to produce temporally consistent video frames and even simulate the physics and dynamics of 3D objects over time. 
-2) It facilitates flexible conditioning information, e.g., simple concatenation in the token space, effectively unifying different token lengths and modalities. 
-3) Pairing with our proposed spatial-temporal mask modeling mechanism, it becomes a general-purpose video diffuser for harnessing a range of tasks, including unconditional generation, video prediction, interpolation, animation, and completion, etc
-
-<img src="example.png" width="700">
-
-Extensive experiments on video generation, prediction, and dynamics modeling (i.e., physics-based QA) tasks have been conducted to demonstrate the effectiveness of VDT in various scenarios, including autonomous driving, human action, and physics-based simulation.
-
-## Release
-
-<details>
-<summary>✅ <b>2024-05-05</b>: Release spatial-temporal mask modeling code and inference code.
-</details>
-
-
-<details>
-<summary>✅ <b>2024-01-27</b>: Our VDT has been accepted by ICLR2024.
-
-</details>
-
-<details>
-<summary>✅ <b>2023-05-22</b>: We propose Video Diffusion Transformer (VDT) model and release checkpoint and inference code. 
-
-</details>
-
+This report outlines the tasks performed in implementing and training the Video Diffusion Transformer (VDT) model for video prediction and unconditional generation tasks using the CityScapes dataset. The primary objectives included implementing data preprocessing, metric evaluation, training/validation functions, and reproducing experimental results. The results, challenges, and suggestions for future improvements are discussed.
 
 ## Getting Started
 
 - Python3, PyTorch>=1.8.0, torchvision>=0.7.0 are required for the current codebase.
 - To install the other dependencies, run
-<pre/>conda env create -f environment.yml</pre> 
-<pre/>conda activate VDT</pre> 
+    ```
+    conda env create -f environment.yml
+    conda activate VDt_new
+    ```
+- For running the code you can use one of the bash scripts. Below are examples for running the code in both train and test modes on single or multiple GPUs.
+    - **Train** (for Test you only need to change `--run_mode` to "test"):
+        - **Single GPU**:
+        ```
+        python3 main.py --model VDT-L/2 --vae mse --image-size 128 \
+        --f None --num-classes 1 --batch_size 6 --cfg-scale 4 --num-sampling-steps 500 --seed 0 \
+        --num_frames 16 --epoch 100 --ckpt vdt_model_500_1061.pt --mode paral --run_mode train
+        ```
+        - **Multiple GPUs**:
+        ```
+        torchrun --nproc_per_node=4 main.py --model VDT-L/2 --vae mse --image-size 128 \
+        --f None --num-classes 1 --batch_size 6 --cfg-scale 4 --num-sampling-steps 500 --seed 0 \
+        --num_frames 16 --epoch 100 --ckpt vdt_model_500_1061.pt --mode paral --run_mode train
+        ```
+
 
 ## Checkpoint
-We now provide checkpoint for Sky Time-Lapse unified generation. You can download it from <a href="https://drive.google.com/file/d/1WIAOm4n0HkmOHMhUj3y6wLLemtz_Xj8b/view?usp=sharing">here</a>.
+We now provide checkpoint for CityScapes Video Prediction and Unconditional Generation. To understand which model you need, be sure to read the report, which describes all the features (the report is attached along with the models). You can download it from <a href="https://drive.google.com/drive/folders/14J5NEeaDxDMB9R_0RDkqkvxwPEzKwy_g?usp=sharing">here</a>.
 
 
-## Inference
-We provide inference ipynb on Sky Time-Lapse unified generation (predict, backward, unconditional, single-frame, arbitrary interpolation, spatial_temporal). To sample results, you can first download the checkpoint, then run inference.ipynb, have fun!
-
-
-## Acknowledgement
-Our codebase is built based on DiT, BEiT, SlotFormer and MVCD. We thank the authors for the nicely organized code!
+## Orinal code
+This is the original repository <a href="https://github.com/RERV/VDT?tab=readme-ov-file">here</a>

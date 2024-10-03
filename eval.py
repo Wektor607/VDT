@@ -117,7 +117,8 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             latent_x = latent_x.to(device)
 
             # Write about it in the paper
-            sample_fn = model.module.forward_with_cfg if hasattr(model, 'module') else model.forward_with_cfg
+            # sample_fn = model.module.forward_with_cfg if hasattr(model, 'module') else model.forward_with_cfg
+            sample_fn = model.forward
             samples = diffusion.p_sample_loop(
                 sample_fn, z.shape, z, clip_denoised=False, progress=False, device=device,
                 raw_x=latent_x, mask=mask
