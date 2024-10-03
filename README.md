@@ -15,7 +15,7 @@ This report outlines the tasks performed in implementing and training the Video 
     conda activate VDt_new
     ```
 - For running the code you can use one of the bash scripts. Below are examples for running the code in both train and test modes on single or multiple GPUs.
-    - **Train** (for Test you only need to change `--run_mode` to "test"):
+    - **Train** (for Test you only need to change `--run_mode` to "test" and add `--task_mode`):
         - **Single GPU**:
         ```
         python3 main.py --model VDT-L/2 --vae mse --image-size 128 \

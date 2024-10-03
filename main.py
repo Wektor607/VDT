@@ -119,6 +119,7 @@ if __name__ == "__main__":
     parser.add_argument("--epoch", type=int, default=2)
     parser.add_argument("--mode", type=str, choices=["single", "paral"], default="single")
     parser.add_argument("--run_mode", type=str, choices=["train", "test"], default="train")
+    parser.add_argument("--task_mode", type=str, choices=["video_pred", "uncond_gen"], default="video_pred")
     args = parser.parse_args()
     
     setup_logging()

@@ -83,7 +83,7 @@ def validate_vdt(args, model, val_dataloader, vae, diffusion, device, metrics_ca
     return avg_loss
 
 def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calculator):
-    img_dir = f"res_test_{args.ckpt}_8_8"
+    img_dir = f"res_test_{args.ckpt}_bs_30"
     os.makedirs(img_dir, exist_ok=True)
     model.eval()
     running_loss, full_loss = 0.0, 0.0
@@ -109,7 +109,13 @@ def test_vdt(args, model, test_dataloader, vae, diffusion, device, metrics_calcu
             
             latent_x = latent_x.view(-1, T, 4, latent_x.shape[-2], latent_x.shape[-1])
             
-            choice_idx = random.choice([0, 3])
+            if args.task_mode == 'video_pred':
+                choice_idx = 0
+            elif args.task_mode == 'uncond_gen':
+                choice_idx = 3
+            else:
+                choice_idx = random.choice([0, 3])
+                
             generator = VideoMaskGenerator((latent_x.shape[-4], latent_x.shape[-2], latent_x.shape[-1]), num_frames=T)
             mask = generator(B, device, idx=choice_idx)
             
