@@ -18,6 +18,7 @@ def step_lr_schedule(optimizer, epoch, init_lr, min_lr, decay_rate):
         param_group['lr'] = lr    
         
 import numpy as np
+import cv2
 import io
 import os
 import time
@@ -344,3 +345,74 @@ def decode_in_batches(samples, vae, chunk_size=256):
         torch.cuda.empty_cache()
 
     return torch.cat(decoded_chunks, dim=0)
+
+def plot_res(input_dir):
+    # input_dir = 'res_test_vdt_model_500_979.pt_8_8'
+    output_dir = 'output_images'
+    os.makedirs(output_dir, exist_ok=True)
+
+    img_height = 130
+    img_width = 130
+
+    color = (255, 165, 0)
+    thickness = 3
+    def is_gray_image(image):
+        return np.allclose(image[:, :, 0], image[:, :, 1]) and np.allclose(image[:, :, 1], image[:, :, 2])
+
+    for filename in os.listdir(input_dir):
+        if filename.endswith('.png') or filename.endswith('.jpg'):
+            image_count = 0
+            file_path = os.path.join(input_dir, filename)
+            symbols = filename.split('_')
+            image = cv2.imread(file_path)
+            
+            if image is None:
+                print(f"Error reading image {file_path}")
+                continue
+            
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            rows, cols, _ = image_rgb.shape
+
+            rows = (rows // img_height) * img_height
+            cols = (cols // img_width) * img_width
+            image_rgb = image_rgb[:rows, :cols]
+
+            images = []
+            for row_start in range(0, rows, img_height):
+                row_images = []
+                for col_start in range(0, cols, img_width):
+                    img_block = image_rgb[row_start:row_start+img_height, col_start:col_start+img_width]
+                    row_images.append(img_block)
+                images.append(row_images)
+
+            filtered_images = [row for row in images if not any(is_gray_image(img) for img in row)]
+
+            for row in filtered_images:
+                row_part_1 = row[:10]
+                row_part_2 = row[10:20]
+                row_part_3 = row[20:30]
+
+                combined_image = np.zeros((img_height * 3, img_width * 10, 3), dtype=np.uint8)
+
+                for j, img in enumerate(row_part_1):
+                    combined_image[0:img_height, j*img_width:(j+1)*img_width, :] = img
+                for j, img in enumerate(row_part_2):
+                    combined_image[img_height:img_height*2, j*img_width:(j+1)*img_width, :] = img
+                for j, img in enumerate(row_part_3):
+                    combined_image[img_height*2:img_height*3, j*img_width:(j+1)*img_width, :] = img
+
+                if symbols[2] == '3.png':
+                    start_point = (0 * img_width, 0)
+                    end_point = (10 * img_width, 3 * img_height)
+                else:
+                    start_point = (0 * img_width, 0)
+                    end_point = ((1 + 1) * img_width, img_height)
+                combined_image = cv2.rectangle(combined_image, start_point, end_point, color, thickness)
+
+                save_path = os.path.join(output_dir, f'{filename}__{image_count}.png')
+                cv2.imwrite(save_path, cv2.cvtColor(combined_image, cv2.COLOR_RGB2BGR))
+                print(f'Saved: {save_path}')
+                image_count += 1
+                if image_count > 15:
+                    break
